@@ -166,7 +166,7 @@ elif aba == "📺 Aulas em Vídeo":
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Aula 1: Introdução")
-        st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ") 
+        st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg&t=4s") 
     with col2:
         st.subheader("Aula 2: Interpretação de Cartas")
         st.write("Vídeo em breve...")
@@ -179,4 +179,5 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
+
 
