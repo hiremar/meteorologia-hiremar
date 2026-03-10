@@ -12,13 +12,10 @@ st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hirem
 # --- INJEÇÃO DE ESTILO (VISUAL MATRIX / SIMULADOR) ---
 st.markdown("""
     <style>
-        /* Fundo e Texto Geral */
-        .stApp {
-            background-color: #0b1a27;
-        }
+        .stApp { background-color: #0b1a27; }
         
-        /* Cor das Letras (Amarelado/Creme para leitura) */
-        h1, h2, h3, h4, h5, h6, p, li, label, .stMarkdown {
+        /* Letras Amareladas/Creme */
+        h1, h2, h3, h4, p, li, label, div, span {
             color: #f1c40f !important;
             font-family: 'Segoe UI', sans-serif;
         }
@@ -28,31 +25,27 @@ st.markdown("""
             background-color: #1e1e1e;
             border-right: 2px solid #00f2ff;
         }
-        
-        /* Cor dos textos na Sidebar */
         [data-testid="stSidebar"] h1, [data-testid="stSidebar"] p, [data-testid="stSidebar"] span {
             color: #00f2ff !important;
         }
 
-        /* Estilo dos Expanders (METAR/TAF) */
+        /* METAR/TAF Code Block */
+        code {
+            color: #00ff00 !important;
+            background-color: #000000 !important;
+            font-size: 1.1em !important;
+        }
+
+        /* Estilo dos Expanders */
         .streamlit-expanderHeader {
             background-color: #1e1e1e !important;
             border: 1px solid #00f2ff !important;
             color: #ffffff !important;
         }
-
-        /* Código (METAR/TAF) com fundo escuro e letra verde neon */
-        code {
-            color: #00ff00 !important;
-            background-color: #000000 !important;
-        }
-
-        /* Botões e Checkboxes */
-        .stCheckbox { color: #ffffff !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- SEGURANÇA DA API (SECRETS) ---
+# --- SEGURANÇA DA API ---
 if "REDEMET_KEY" in st.secrets:
     api_key = st.secrets["REDEMET_KEY"]
 else:
@@ -66,7 +59,7 @@ if not api_key:
 st.sidebar.title("✈️ Menu de Navegação")
 aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
 
-# --- FUNÇÕES DE APOIO (MANTIDAS) ---
+# --- FUNÇÕES DE APOIO ---
 def get_sigmet_color(msg):
     msg = msg.upper()
     if "TS" in msg: return "red"
@@ -80,7 +73,7 @@ def sigmet_to_decimal(texto):
     return [[-(int(m[1]) + int(m[2])/60) if m[0] == 'S' else (int(m[1]) + int(m[2])/60),
              -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
 
-# --- SEÇÃO 1: BRIEFING OPERACIONAL (TUDO MANTIDO) ---
+# --- SEÇÃO 1: BRIEFING OPERACIONAL ---
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
@@ -103,16 +96,22 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # --- MAPA ---
+    # --- MAPA (ESTILO GOOGLE EARTH) ---
     m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
+
+    # Camada Base Satélite (Esri World Imagery)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False, control=True
+    ).add_to(m)
+    
     folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro", control=True).add_to(m)
-    folium.TileLayer('OpenStreetMap', name="Mapa Geográfico", control=True).add_to(m)
 
     if show_tsc:
         folium.WmsTileLayer(
             url="https://redemet.decea.mil.br/geoserver/wms",
             layers="satelite:goes16_ch13_realce",
-            fmt="image/png", transparent=True, name="Nuvens / TSC", overlay=True
+            fmt="image/png", transparent=True, name="Nuvens / TSC", overlay=True, opacity=0.6
         ).add_to(m)
 
     if show_sigmet:
@@ -127,6 +126,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     if show_vias:
         folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
 
+    # Marcadores e Dados
     dados_missao = []
     todos_para_mapa = list(set([origem, destino, alternativa] + OUTROS_ADS))
 
@@ -144,10 +144,11 @@ if aba == "🛰️ Briefing em Tempo Real":
             folium.Marker(COORDS[icao], popup=f"<b>{icao}</b><br>{metar}", icon=folium.Icon(color=cor, icon='plane', prefix='fa')).add_to(m)
         except: continue
 
-    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5, opacity=0.7).add_to(m)
+    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5, opacity=0.8).add_to(m)
     folium.LayerControl(position='topright').add_to(m)
     st_folium(m, width="100%", height=600)
 
+    # Detalhamento METAR/TAF
     st.divider()
     st.subheader("🔍 Detalhamento da Missão (METAR/TAF)")
     if dados_missao:
@@ -159,28 +160,23 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
-# --- SEÇÃO 2: VÍDEOS ---
+# --- SEÇÃO 2: VÍDEOS (MANTIDA) ---
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Aulas de Meteorologia")
-    st.info("Espaço destinado aos seus vídeos do YouTube.")
-    
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Aula 1: Introdução")
         st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ") 
-    
     with col2:
         st.subheader("Aula 2: Interpretação de Cartas")
         st.write("Vídeo em breve...")
 
-# --- SEÇÃO 3: MATERIAIS ---
+# --- SEÇÃO 3: MATERIAIS (MANTIDA) ---
 elif aba == "📚 Materiais e Links":
     st.title("📚 Biblioteca e Links Úteis")
     st.markdown("""
     ### 🔗 Links Oficiais
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
-    
-    ### 📂 Documentos para Aula
-    Aqui você pode listar links para seus PDFs no Google Drive ou materiais da universidade.
     """)
+
