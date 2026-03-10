@@ -11,7 +11,15 @@ st.set_page_config(layout="wide", page_title="Briefing Meteorológico Prof. Hire
 
 # --- BARRA LATERAL ---
 st.sidebar.title("🛠️ Painel de Controle")
-api_key = st.sidebar.text_input("REDEMET API KEY", value="tyZcJePk7Y5v7QZGbqXiDQwHaGQFli9J5HfQh15f", type="password")
+# Tenta buscar nos Secrets, se não achar (rodando local), pede no campo
+if "REDEMET_KEY" in st.secrets:
+    api_key = st.secrets["REDEMET_KEY"]
+else:
+    api_key = st.sidebar.text_input("REDEMET API KEY", type="password")
+
+if not api_key:
+    st.error("Por favor, configure a API KEY da REDEMET para visualizar os dados.")
+    st.stop()
 
 st.sidebar.subheader("📍 Planejamento")
 lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
@@ -135,3 +143,4 @@ if dados_missao:
             st.markdown("**TAF:**")
             st.code(dado['TAF'], language="fix")
             
+
