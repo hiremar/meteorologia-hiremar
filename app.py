@@ -2,10 +2,9 @@ import streamlit as st
 import folium
 import requests
 import re
-import os
+import pandas as pd
 from streamlit_folium import st_folium
 from datetime import datetime
-from folium import plugins
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
@@ -30,12 +29,11 @@ st.markdown("""
             color: #00f2ff !important;
         }
 
-        /* METAR/TAF Code Block - Verde Matrix */
+        /* METAR/TAF Code Block */
         code {
             color: #00ff00 !important;
             background-color: #000000 !important;
             font-size: 1.1em !important;
-            border: 1px solid #00ff00;
         }
 
         /* Estilo dos Expanders */
@@ -47,28 +45,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SEGURANÇA DA API (SECRETS) ---
+# --- SEGURANÇA DA API ---
 if "REDEMET_KEY" in st.secrets:
     api_key = st.secrets["REDEMET_KEY"]
 else:
-    api_key = st.sidebar.text_input("REDEMET API KEY", type="password", help="Insira sua chave API da Redemet")
+    api_key = st.sidebar.text_input("REDEMET API KEY", type="password")
 
 if not api_key:
-    st.error("⚠️ API KEY não detectada. Configure o 'Secret' no Streamlit Cloud ou insira manualmente na barra lateral.")
+    st.error("Por favor, configure a API KEY da REDEMET para visualizar os dados.")
     st.stop()
-
-# --- CONFIGURAÇÕES DE CARTAS ENRC ---
-LINKS_BAIXA = {
-    "L1": "ICA%3AENRC_L1", "L2": "ICA%3AENRC_L2", "L3": "ICA%3AENRC_L3",
-    "L4": "ICA%3AENRC_L4", "L5": "ICA%3AENRC_L5", "L6": "ICA%3AENRC_L6",
-    "L7": "ICA%3AENRC_L7", "L8": "ICA%3AENRC_L8", "L9": "ICA%3AENRC_L9"
-}
-
-LINKS_ALTA = {
-    "H1": "ICA%3AENRC_H1", "H2": "ICA%3AENRC_H2", "H3": "ICA%3AENRC_H3",
-    "H4": "ICA%3AENRC_H4", "H5": "ICA%3AENRC_H5", "H6": "ICA%3AENRC_H6",
-    "H7": "ICA%3AENRC_H7", "H8": "ICA%3AENRC_H8", "H9": "ICA%3AENRC_H9"
-}
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
@@ -96,10 +81,10 @@ if aba == "🛰️ Briefing em Tempo Real":
     destino = st.sidebar.selectbox("Destino", lista_ads, index=8)
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
-    st.sidebar.subheader("📡 Camadas Meteorológicas")
+    st.sidebar.subheader("📡 Camadas Visuais")
     show_tsc = st.sidebar.checkbox("Exibir Satélite / TSC", value=True)
-    show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
     show_vias = st.sidebar.checkbox("Exibir Aerovias", value=False)
+    show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
     COORDS = {
         "SBGR": [-23.432, -46.470], "SBGL": [-22.810, -43.250], "SBSP": [-23.626, -46.656],
@@ -111,17 +96,17 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # --- MAPA ---
+    # --- MAPA (ESTILO GOOGLE EARTH) ---
     m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
 
-    # Camadas Base
+    # Camada Base Satélite (Esri World Imagery)
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False
+        attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False, control=True
     ).add_to(m)
+    
     folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro", control=True).add_to(m)
 
-    # Camadas Meteorológicas Dinâmicas
     if show_tsc:
         folium.WmsTileLayer(
             url="https://redemet.decea.mil.br/geoserver/wms",
@@ -135,63 +120,13 @@ if aba == "🛰️ Briefing em Tempo Real":
             for s in s_res.get('data', {}).get('data', []):
                 pts = sigmet_to_decimal(s['mens'])
                 if len(pts) >= 3:
-                    folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens'], name="⚠️ SIGMET").add_to(m)
+                    folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
         except: pass
 
     if show_vias:
         folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
 
-    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) COM CORREÇÃO ---
-    lista_baixa = []
-    # --- INCLUSÃO DAS CARTAS AIS (CORREÇÃO DEFINITIVA PROJEÇÃO EPSG:4326) ---
-    lista_baixa = []
-    for label, layer_id in LINKS_BAIXA.items():
-        lyr = folium.WmsTileLayer(
-            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-            layers=layer_id.replace("%3A", ":"),
-            fmt="image/png",
-            transparent=True,
-            name=f"Carta {label}",
-            overlay=True,
-            control=True,
-            show=False,
-            attr="DECEA",
-            version="1.1.1",
-            styles="",
-            crs="EPSG:4326"  # <--- ADICIONE ESTA LINHA AQUI
-        ).add_to(m)
-        lista_baixa.append(lyr)
-
-    lista_alta = []
-    for label, layer_id in LINKS_ALTA.items():
-        lyr = folium.WmsTileLayer(
-            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-            layers=layer_id.replace("%3A", ":"),
-            fmt="image/png",
-            transparent=True,
-            name=f"Carta {label}",
-            overlay=True,
-            control=True,
-            show=False,
-            attr="DECEA",
-            version="1.1.1",
-            styles="",
-            crs="EPSG:4326"  # <--- ADICIONE ESTA LINHA AQUI TAMBÉM
-        ).add_to(m)
-        lista_alta.append(lyr)
-
-    # Agrupamento para Cartas
-    plugins.GroupedLayerControl(
-        groups={
-            "📉 CARTAS BAIXA (ENRC L)": lista_baixa,
-            "📈 CARTAS ALTA (ENRC H)": lista_alta
-        },
-        exclusive_groups=False,
-        collapsed=True,
-        position='topright'
-    ).add_to(m)
-
-    # Marcadores de Aeródromos
+    # Marcadores e Dados
     dados_missao = []
     todos_para_mapa = list(set([origem, destino, alternativa] + OUTROS_ADS))
 
@@ -210,26 +145,22 @@ if aba == "🛰️ Briefing em Tempo Real":
         except: continue
 
     folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5, opacity=0.8).add_to(m)
-    
-    plugins.Fullscreen().add_to(m)
-    folium.LayerControl(position='topright', collapsed=True).add_to(m)
-    
-    st_folium(m, width="100%", height=650)
+    folium.LayerControl(position='topright').add_to(m)
+    st_folium(m, width="100%", height=600)
 
-    # Detalhamento METAR/TAF (Cards)
+    # Detalhamento METAR/TAF
     st.divider()
     st.subheader("🔍 Detalhamento da Missão (METAR/TAF)")
     if dados_missao:
-        ordem = {origem: 0, destino: 1, alternativa: 2}
-        dados_ordenados = sorted(dados_missao, key=lambda x: ordem.get(x['ICAO'], 99))
         cols = st.columns(3)
-        for idx, dado in enumerate(dados_ordenados):
+        for idx, dado in enumerate(dados_missao):
             with cols[idx].expander(f"✈️ {dado['ICAO']}", expanded=True):
                 st.markdown("**METAR:**")
                 st.code(dado['METAR'], language="fix")
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
+# --- SEÇÃO 2: VÍDEOS (MANTIDA) ---
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Aulas de Meteorologia")
     col1, col2 = st.columns(2)
@@ -240,6 +171,7 @@ elif aba == "📺 Aulas em Vídeo":
         st.subheader("Aula 2: Interpretação de Cartas")
         st.write("Vídeo em breve...")
 
+# --- SEÇÃO 3: MATERIAIS (MANTIDA) ---
 elif aba == "📚 Materiais e Links":
     st.title("📚 Biblioteca e Links Úteis")
     st.markdown("""
@@ -247,4 +179,3 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
-
