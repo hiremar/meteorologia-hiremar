@@ -144,35 +144,35 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     # --- INCLUSÃO DAS CARTAS AIS (ESTILO COLAB - FUNCIONA TUDO) ---
     lista_baixa = []
-    for label, layer_id in LINKS_BAIXA.items():
-        lyr = folium.WmsTileLayer(
-            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-            layers=layer_id.replace("%3A", ":"),
-            fmt="image/png",
-            transparent=True,
-            name=f"Carta {label}",
-            overlay=True,
-            control=True,
-            show=False,
-            attr="DECEA",
-            # Removidos: crs e version (deixa o Folium usar o padrão dele igual no Colab)
-        ).add_to(m)
-        lista_baixa.append(lyr)
+   # --- INCLUSÃO DAS CARTAS AIS (SOLUÇÃO DEFINITIVA L1) ---
+    fg_baixa = folium.FeatureGroup(name="📉 CARTAS BAIXA (ENRC L)", show=False).add_to(m)
+    
+    # TRATAMENTO ESPECIAL PARA L1 (Link Direto do Colab)
+    # Definimos os limites (BBOX) manualmente baseados no link que você enviou
+    bounds_l1 = [[-35.1097, -59.1149], [-22.4090, -39.9540]] 
+    
+    folium.raster_layers.ImageOverlay(
+        image="https://geoaisweb.decea.mil.br/geoserver/ICA/wms?service=WMS&version=1.1.0&request=GetMap&layers=ICA%3AENRC_L1&bbox=-59.11495902388326%2C-35.10976237711335%2C-39.95400124716883%2C-22.40908130398317&width=1024&height=1024&srs=EPSG%3A4326&styles=&format=image/png",
+        bounds=bounds_l1,
+        name="Carta L1 (Fix)",
+        opacity=0.7,
+        interactive=True,
+        cross_origin=False,
+        zindex=1
+    ).add_to(fg_baixa)
 
-    lista_alta = []
-    for label, layer_id in LINKS_ALTA.items():
-        lyr = folium.WmsTileLayer(
-            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-            layers=layer_id.replace("%3A", ":"),
-            fmt="image/png",
-            transparent=True,
-            name=f"Carta {label}",
-            overlay=True,
-            control=True,
-            show=False,
-            attr="DECEA"
-        ).add_to(m)
-        lista_alta.append(lyr)
+    # RESTANTE DAS CARTAS (Mantendo a lógica que já funciona para as outras)
+    for label, layer_id in LINKS_BAIXA.items():
+        if label != "L1": # Pulamos a L1 aqui pois já adicionamos acima
+            folium.WmsTileLayer(
+                url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+                layers=layer_id.replace("%3A", ":"),
+                fmt="image/png",
+                transparent=True,
+                name=f"Carta {label}",
+                overlay=True,
+                attr="DECEA"
+            ).add_to(fg_baixa)
 
     # Agrupamento Sanfona para Cartas
     plugins.GroupedLayerControl(
@@ -244,4 +244,5 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
+
 
