@@ -2,7 +2,6 @@ import streamlit as st
 import folium
 import requests
 import re
-import os
 from streamlit_folium import st_folium
 from datetime import datetime
 from folium import plugins
@@ -10,7 +9,7 @@ from folium import plugins
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
 
-# --- INJEÇÃO DE ESTILO (VISUAL MATRIX / SIMULADOR) ---
+# --- INJEÇÃO DE ESTILO ---
 st.markdown("""
     <style>
         .stApp { background-color: #0b1a27; }
@@ -51,21 +50,16 @@ def sigmet_to_decimal(texto):
              -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
 
 def plot_tsc(mapa, api_key):
-    """Busca descargas atmosféricas e plota círculos coloridos por tempo"""
     try:
         url_tsc = f"https://api-redemet.decea.mil.br/produtos/raios?api_key={api_key}"
         res = requests.get(url_tsc).json()
         if res.get('status') and res.get('data'):
             for raio in res['data']:
                 minutos = int(raio['minutos'])
-                if minutos <= 15: cor = 'red'
-                elif minutos <= 30: cor = 'yellow'
-                elif minutos <= 45: cor = 'green'
-                else: cor = 'blue'
-                
+                cor = 'red' if minutos <= 15 else ('yellow' if minutos <= 30 else ('green' if minutos <= 45 else 'blue'))
                 folium.Circle(
                     location=[float(raio['lat']), float(raio['lon'])],
-                    radius=1500, # Raio em metros para visibilidade
+                    radius=1500,
                     color=cor,
                     fill=True,
                     fill_opacity=0.7,
@@ -77,6 +71,7 @@ def plot_tsc(mapa, api_key):
 st.sidebar.title("✈️ Menu de Navegação")
 aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
 
+# --- SEÇÃO 1: BRIEFING (Toda a lógica do mapa deve estar aqui dentro) ---
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
@@ -99,7 +94,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # --- INICIALIZAÇÃO DO MAPA ---
+    # Inicializa o mapa
     m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
 
     folium.TileLayer(
@@ -108,15 +103,13 @@ if aba == "🛰️ Briefing em Tempo Real":
     ).add_to(m)
     folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro", control=True).add_to(m)
 
-    # --- CAMADAS METEOROLÓGICAS ---
+    # AQUI O SHOW_TSC AGORA EXISTE PORQUE ESTÁ DENTRO DO MESMO BLOCO IF
     if show_tsc:
-        # 1. Nuvens
         folium.WmsTileLayer(
             url="https://redemet.decea.mil.br/geoserver/wms",
             layers="satelite:goes16_ch13_realce",
             fmt="image/png", transparent=True, name="Nuvens (GOES-16)", overlay=True, opacity=0.6
         ).add_to(m)
-        # 2. Descargas Atmosféricas (TSC)
         plot_tsc(m, api_key)
 
     if show_sigmet:
@@ -125,13 +118,10 @@ if aba == "🛰️ Briefing em Tempo Real":
             for s in s_res.get('data', {}).get('data', []):
                 pts = sigmet_to_decimal(s['mens'])
                 if len(pts) >= 3:
-                    folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens'], name="⚠️ SIGMET").add_to(m)
+                    folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
         except: pass
 
-    if show_vias:
-        folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
-
-    # --- CARTAS AIS ---
+    # Cartas AIS e Aeródromos (Código continua identado aqui dentro...)
     lista_baixa = []
     for label, layer_id in LINKS_BAIXA.items():
         lyr = folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=layer_id, fmt="image/png", transparent=True, name=f"Carta {label}", overlay=True, control=True, show=False, attr="DECEA", version="1.1.1", styles="").add_to(m)
@@ -143,11 +133,43 @@ if aba == "🛰️ Briefing em Tempo Real":
         lista_alta.append(lyr)
 
     plugins.GroupedLayerControl(
-        groups={"📉 CARTAS BAIXA (ENRC L)": lista_baixa, "📈 CARTAS ALTA (ENRC H)": lista_alta},
+        groups={"📉 CARTAS BAIXA": lista_baixa, "📈 CARTAS ALTA": lista_alta},
         exclusive_groups=False, collapsed=True, position='topright'
     ).add_to(m)
 
-    # --- AERÓDROMOS E ROTA ---
+    # Plotar aeródromos e rota
     dados_missao = []
-    todos_para_mapa = list(set([origem, destino, alternativa] + OUT
+    for icao in list(set([origem, destino, alternativa] + OUTROS_ADS)):
+        try:
+            m_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}").json()
+            t_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}").json()
+            metar = m_res['data']['data'][0]['mens'] if m_res.get('data') and m_res['data']['data'] else "N/D"
+            taf = t_res['data']['data'][0]['mens'] if t_res.get('data') and t_res['data']['data'] else "N/D"
+            if icao in [origem, destino, alternativa]:
+                dados_missao.append({"ICAO": icao, "METAR": metar, "TAF": taf})
+            cor = 'blue' if icao in [origem, destino] else ('purple' if icao == alternativa else 'green')
+            folium.Marker(COORDS[icao], popup=f"<b>{icao}</b><br>{metar}", icon=folium.Icon(color=cor, icon='plane', prefix='fa')).add_to(m)
+        except: continue
 
+    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5).add_to(m)
+    st_folium(m, width="100%", height=650)
+
+    # Detalhamento (Cards)
+    st.divider()
+    if dados_missao:
+        cols = st.columns(3)
+        for idx, dado in enumerate(dados_missao):
+            with cols[idx].expander(f"✈️ {dado['ICAO']}", expanded=True):
+                st.markdown("**METAR:**")
+                st.code(dado['METAR'], language="fix")
+                st.markdown("**TAF:**")
+                st.code(dado['TAF'], language="fix")
+
+# --- OUTRAS ABAS ---
+elif aba == "📺 Aulas em Vídeo":
+    st.title("📺 Aulas de Meteorologia")
+    st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg&t=4s")
+
+elif aba == "📚 Materiais e Links":
+    st.title("📚 Biblioteca")
+    st.write("Links Oficiais: [REDEMET](https://www.redemet.decea.mil.br/) | [AISWEB](https://aisweb.decea.mil.br/)")
