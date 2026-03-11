@@ -88,7 +88,51 @@ def sigmet_to_decimal(texto):
     matches = re.findall(padrao, texto)
     return [[-(int(m[1]) + int(m[2])/60) if m[0] == 'S' else (int(m[1]) + int(m[2])/60),
              -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
+# --- ADICIONE ESTA FUNÇÃO NAS 'FUNÇÕES DE APOIO' ---
+def plot_tsc(mapa, api_key):
+    try:
+        # Busca descargas atmosféricas dos últimos 10 a 60 minutos
+        url_tsc = f"https://api-redemet.decea.mil.br/produtos/raios?api_key={api_key}"
+        res = requests.get(url_tsc).json()
+        
+        if res.get('status') and res.get('data'):
+            for raio in res['data']:
+                lat = float(raio['lat'])
+                lon = float(raio['lon'])
+                minutos = int(raio['minutos']) # Idade do raio em minutos
+                
+                # Define a cor conforme o padrão REDEMET
+                if minutos <= 15: cor = 'red'
+                elif minutos <= 30: cor = 'yellow'
+                elif minutos <= 45: cor = 'green'
+                else: cor = 'blue'
+                
+                # Adiciona o círculo de impacto (aprox. 500m a 1km de raio visual)
+                folium.Circle(
+                    location=[lat, lon],
+                    radius=800, 
+                    color=cor,
+                    fill=True,
+                    fill_opacity=0.8,
+                    popup=f"Descarga: {minutos} min atrás"
+                ).add_to(mapa)
+    except Exception as e:
+        st.sidebar.warning(f"Erro ao carregar TSC: {e}")
 
+# --- NO CORPO DO MAPA (Substitua a parte do show_tsc antiga) ---
+if show_tsc:
+    # 1. Mantemos a camada de nuvens (GOES-16)
+    folium.WmsTileLayer(
+        url="https://redemet.decea.mil.br/geoserver/wms",
+        layers="satelite:goes16_ch13_realce",
+        fmt="image/png",
+        transparent=True,
+        name="Nuvens (Satélite)",
+        overlay=True
+    ).add_to(m)
+    
+    # 2. Chamamos a nova função para plotar os raios em cima das nuvens
+    plot_tsc(m, api_key)
 # --- SEÇÃO 1: BRIEFING OPERACIONAL ---
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
@@ -249,3 +293,4 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
+
