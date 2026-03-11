@@ -46,10 +46,11 @@ def get_sigmet_color(msg):
 aba = st.sidebar.radio("Navegação", ["🛰️ Briefing em Tempo Real", "📺 Aulas"])
 
 if aba == "🛰️ Briefing em Tempo Real":
-    st.sidebar.subheader("📍 Rota")
+    st.sidebar.subheader("📍 Rota e Planeamento")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
     origem = st.sidebar.selectbox("Origem", lista_ads, index=0)
     destino = st.sidebar.selectbox("Destino", lista_ads, index=8)
+    alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
     
     st.sidebar.subheader("📡 Meteorologia")
     show_sat = st.sidebar.checkbox("Exibir Satélite", value=False)
@@ -70,17 +71,25 @@ if aba == "🛰️ Briefing em Tempo Real":
                      attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False).add_to(m)
     folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro", overlay=False).add_to(m)
 
-    # 3. CAMADAS DE CARTAS (OVERLAYS - MEIO)
-    # Criando um grupo para as cartas não ficarem espalhadas
+    # 3. CAMADAS DE CARTAS BAIXA (L1 a L9)
     for i in range(1, 10):
         folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
             layers=f"ICA:ENRC_L{i}",
-            fmt="image/png", transparent=True, name=f"Carta L{i}",
+            fmt="image/png", transparent=True, name=f"Carta L{i} (Baixa)",
             overlay=True, show=(i==1), attr="DECEA"
         ).add_to(m)
 
-    # 4. SATÉLITE REDEMET
+    # 4. CAMADAS DE CARTAS ALTA (H1 a H9)
+    for i in range(1, 10):
+        folium.WmsTileLayer(
+            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+            layers=f"ICA:ENRC_H{i}",
+            fmt="image/png", transparent=True, name=f"Carta H{i} (Alta)",
+            overlay=True, show=False, attr="DECEA"
+        ).add_to(m)
+
+    # 5. SATÉLITE REDEMET
     if show_sat:
         folium.WmsTileLayer(
             url="https://redemet.decea.mil.br/geoserver/wms",
@@ -89,7 +98,7 @@ if aba == "🛰️ Briefing em Tempo Real":
             overlay=True, opacity=0.5
         ).add_to(m)
 
-    # 5. SIGMETs (POLÍGONOS)
+    # 6. SIGMETs
     if show_sigmet:
         try:
             s_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}").json()
@@ -102,9 +111,12 @@ if aba == "🛰️ Briefing em Tempo Real":
                     ).add_to(m)
         except: pass
 
-    # 6. AERÓDROMOS E METAR/TAF (MARCADORES - TOPO)
+    # 7. AERÓDROMOS (ORIGEM, DESTINO, ALTERNATIVA)
     dados_missao = []
-    for icao in [origem, destino]:
+    # Lista única para evitar duplicados se a alternativa for igual ao destino, por exemplo
+    ad_para_plotar = list(dict.fromkeys([origem, destino, alternativa]))
+
+    for icao in ad_para_plotar:
         try:
             m_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}").json()
             t_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}").json()
@@ -113,25 +125,27 @@ if aba == "🛰️ Briefing em Tempo Real":
             
             dados_missao.append({"ICAO": icao, "METAR": metar, "TAF": taf})
             
-            # Marcador SEMPRE no topo usando um FeatureGroup ou adicionando por último
+            # Cor do ícone: Azul para rota principal, Roxo para alternativa
+            cor_icone = 'purple' if icao == alternativa else 'blue'
+            
             folium.Marker(
                 COORDS[icao], 
                 popup=folium.Popup(f"<b>{icao}</b><br><small>{metar}</small>", max_width=300),
-                icon=folium.Icon(color='blue', icon='plane', prefix='fa')
+                icon=folium.Icon(color=cor_icone, icon='plane', prefix='fa')
             ).add_to(m)
         except: continue
 
-    # Linha da Rota
-    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=4, opacity=0.8).add_to(m)
+    # Linha da Rota Principal
+    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=4, opacity=0.8, tooltip="Rota Principal").add_to(m)
 
     # Controles
     folium.LayerControl(position='topright', collapsed=True).add_to(m)
     plugins.Fullscreen().add_to(m)
 
-    st.title(f"🛰️ Briefing: {origem} ✈️ {destino}")
+    st.title(f"🛰️ Briefing: {origem} ✈️ {destino} (ALTN: {alternativa})")
     st_folium(m, width="100%", height=700)
 
-    # Exibição dos códigos METAR/TAF abaixo do mapa
+    # Exibição dos códigos METAR/TAF (Cards)
     if dados_missao:
         st.divider()
         cols = st.columns(len(dados_missao))
@@ -142,3 +156,4 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.code(dado['METAR'], language="fix")
                 st.markdown("**TAF**")
                 st.code(dado['TAF'], language="fix")
+
