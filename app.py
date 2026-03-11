@@ -142,28 +142,43 @@ if aba == "🛰️ Briefing em Tempo Real":
     if show_vias:
         folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
 
-    # --- INCLUSÃO DAS CARTAS AIS (ESTILO COLAB - FUNCIONA TUDO) ---
-   # --- INCLUSÃO DAS CARTAS AIS (SOLUÇÃO CORRIGIDA) ---
-    fg_baixa = folium.FeatureGroup(name="📉 CARTAS BAIXA (ENRC L)", show=False).add_to(m)
-    fg_alta = folium.FeatureGroup(name="📈 CARTAS ALTA (ENRC H)", show=False).add_to(m)
+    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) ---
+    lista_baixa = []
+    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) COM CORREÇÃO L1 ---
+    lista_baixa = []
+    for label, layer_id in LINKS_BAIXA.items():
+        lyr = folium.WmsTileLayer(
+            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+            layers=layer_id.replace("%3A", ":"),
+            fmt="image/png",
+            transparent=True,
+            name=f"Carta {label}",
+            overlay=True,
+            control=True,
+            show=False,
+            attr="DECEA",
+            version="1.1.1", # Versão mais estável para o GeoServer do DECEA
+            styles=""        # Força o estilo padrão para evitar erro de renderização
+        ).add_to(m)
+        lista_baixa.append(lyr)
 
-    # Função para evitar repetição de código
-    def add_enrc_layer(links_dict, group):
-        for label, layer_id in links_dict.items():
-            folium.WmsTileLayer(
-                url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-                layers=layer_id.replace("%3A", ":"),
-                fmt="image/png",
-                transparent=True,
-                name=f"Carta {label}",
-                overlay=True,
-                attr="DECEA",
-                crs="EPSG:4326",  # Força a projeção correta para o DECEA 
-                version="1.1.1"    # Versão mais estável para o Folium 
-            ).add_to(group)
+    lista_alta = []
+    for label, layer_id in LINKS_ALTA.items():
+        lyr = folium.WmsTileLayer(
+            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+            layers=layer_id.replace("%3A", ":"),
+            fmt="image/png",
+            transparent=True,
+            name=f"Carta {label}",
+            overlay=True,
+            control=True,
+            show=False,
+            attr="DECEA",
+            version="1.1.1",
+            styles=""
+        ).add_to(m)
+        lista_alta.append(lyr)
 
-    add_enrc_layer(LINKS_BAIXA, fg_baixa)
-    add_enrc_layer(LINKS_ALTA, fg_alta)
     # Agrupamento Sanfona para Cartas
     plugins.GroupedLayerControl(
         groups={
@@ -234,6 +249,3 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
-
-
-
