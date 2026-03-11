@@ -48,7 +48,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- SEGURANÇA DA API (SECRETS) ---
-# Prioriza o st.secrets para não mostrar o input na tela se já estiver configurado
 if "REDEMET_KEY" in st.secrets:
     api_key = st.secrets["REDEMET_KEY"]
 else:
@@ -142,9 +141,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     if show_vias:
         folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
 
-    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) ---
-    lista_baixa = []
-    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) COM CORREÇÃO L1 ---
+    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) COM CORREÇÃO ---
     lista_baixa = []
     for label, layer_id in LINKS_BAIXA.items():
         lyr = folium.WmsTileLayer(
@@ -157,8 +154,8 @@ if aba == "🛰️ Briefing em Tempo Real":
             control=True,
             show=False,
             attr="DECEA",
-            version="1.1.1", # Versão mais estável para o GeoServer do DECEA
-            styles=""        # Força o estilo padrão para evitar erro de renderização
+            version="1.1.1",
+            styles=""
         ).add_to(m)
         lista_baixa.append(lyr)
 
@@ -179,7 +176,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         ).add_to(m)
         lista_alta.append(lyr)
 
-    # Agrupamento Sanfona para Cartas
+    # Agrupamento para Cartas
     plugins.GroupedLayerControl(
         groups={
             "📉 CARTAS BAIXA (ENRC L)": lista_baixa,
@@ -210,7 +207,6 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5, opacity=0.8).add_to(m)
     
-    # Controles extras
     plugins.Fullscreen().add_to(m)
     folium.LayerControl(position='topright', collapsed=True).add_to(m)
     
@@ -230,7 +226,6 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
-# --- SEÇÃO 2: VÍDEOS ---
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Aulas de Meteorologia")
     col1, col2 = st.columns(2)
@@ -241,7 +236,6 @@ elif aba == "📺 Aulas em Vídeo":
         st.subheader("Aula 2: Interpretação de Cartas")
         st.write("Vídeo em breve...")
 
-# --- SEÇÃO 3: MATERIAIS ---
 elif aba == "📚 Materiais e Links":
     st.title("📚 Biblioteca e Links Úteis")
     st.markdown("""
@@ -249,5 +243,3 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
-
-
