@@ -147,11 +147,11 @@ elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("🎥 Aula 1: Cartas ENRC")
+        st.subheader("🎥 Aula 1: Altimetria - Ajuste: QNH / QNE")
         st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg") 
     with col2:
-        st.subheader("🎥 Aula 2: SIGMET")
-        st.video("https://www.youtube.com/watch?v=r_F1R8x59_0")
+        st.subheader("🎥 Aula 2: Satélite, SIGMET e GELO")
+        st.video("https://www.youtube.com/watch?v=KoyZS3iCeM0")
 
 elif aba == "📚 Materiais e Links":
     st.title("📚 Biblioteca Digital")
@@ -162,6 +162,7 @@ elif aba == "📚 Materiais e Links":
     ### 🔗 Links Úteis
     - [REDEMET](https://redemet.decea.mil.br/)
     - [AISWEB](https://aisweb.decea.mil.br/)
-    - [Aviation Weather Center ] (https://aviationweather.gov/)
+    - [AWC](https://aviationweather.gov/)
     """)
+
 
