@@ -9,7 +9,7 @@ from folium import plugins
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
 
-# --- INJEÇÃO DE ESTILO ---
+# --- INJEÇÃO DE ESTILO MATRIX ---
 st.markdown("""
     <style>
         .stApp { background-color: #0b1a27; }
@@ -22,13 +22,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- SEGURANÇA DA API ---
+# Se não houver segredo configurado, pede o input mas não deixa o valor exposto no código
 if "REDEMET_KEY" in st.secrets:
     api_key = st.secrets["REDEMET_KEY"]
 else:
-    api_key = st.sidebar.text_input("REDEMET API KEY", value="tyZcJePk7Y5v7QZGbqXiDQwHaGQFli9J5HfQh15f", type="password")
+    api_key = st.sidebar.text_input("REDEMET API KEY", type="password", help="Insira sua chave API")
 
 if not api_key:
-    st.error("⚠️ API KEY não detectada.")
+    st.info("💡 Por favor, insira sua REDEMET API KEY na barra lateral para carregar os dados meteorológicos.")
     st.stop()
 
 # --- CONFIGURAÇÕES DE CARTAS ENRC ---
@@ -49,29 +50,10 @@ def sigmet_to_decimal(texto):
     return [[-(int(m[1]) + int(m[2])/60) if m[0] == 'S' else (int(m[1]) + int(m[2])/60),
              -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
 
-def plot_tsc(mapa, api_key):
-    try:
-        url_tsc = f"https://api-redemet.decea.mil.br/produtos/raios?api_key={api_key}"
-        res = requests.get(url_tsc).json()
-        if res.get('status') and res.get('data'):
-            for raio in res['data']:
-                minutos = int(raio['minutos'])
-                cor = 'red' if minutos <= 15 else ('yellow' if minutos <= 30 else ('green' if minutos <= 45 else 'blue'))
-                folium.Circle(
-                    location=[float(raio['lat']), float(raio['lon'])],
-                    radius=1500,
-                    color=cor,
-                    fill=True,
-                    fill_opacity=0.7,
-                    popup=f"Descarga: {minutos} min atrás"
-                ).add_to(mapa)
-    except: pass
-
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
 aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
 
-# --- SEÇÃO 1: BRIEFING (Toda a lógica do mapa deve estar aqui dentro) ---
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
@@ -79,8 +61,8 @@ if aba == "🛰️ Briefing em Tempo Real":
     destino = st.sidebar.selectbox("Destino", lista_ads, index=8)
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
-    st.sidebar.subheader("📡 Camadas Meteorológicas")
-    show_tsc = st.sidebar.checkbox("Exibir Satélite / TSC", value=True)
+    st.sidebar.subheader("📡 Camadas Visuais")
+    show_satelite = st.sidebar.checkbox("Exibir Satélite GOES-16", value=True)
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
     show_vias = st.sidebar.checkbox("Exibir Aerovias", value=False)
 
@@ -94,23 +76,26 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # Inicializa o mapa
+    # --- INICIALIZAÇÃO DO MAPA COM CAMADAS DE FUNDO ---
     m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
 
+    # Adicionando os mapas base que você gosta
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False
     ).add_to(m)
-    folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro", control=True).add_to(m)
+    
+    folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
+    
+    folium.TileLayer('OpenStreetMap', name="Mapa Padrão", overlay=False).add_to(m)
 
-    # AQUI O SHOW_TSC AGORA EXISTE PORQUE ESTÁ DENTRO DO MESMO BLOCO IF
-    if show_tsc:
+    # --- CAMADAS METEOROLÓGICAS ---
+    if show_satelite:
         folium.WmsTileLayer(
             url="https://redemet.decea.mil.br/geoserver/wms",
             layers="satelite:goes16_ch13_realce",
-            fmt="image/png", transparent=True, name="Nuvens (GOES-16)", overlay=True, opacity=0.6
+            fmt="image/png", transparent=True, name="Nuvens (Satélite)", overlay=True, opacity=0.5
         ).add_to(m)
-        plot_tsc(m, api_key)
 
     if show_sigmet:
         try:
@@ -121,23 +106,37 @@ if aba == "🛰️ Briefing em Tempo Real":
                     folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
         except: pass
 
-    # Cartas AIS e Aeródromos (Código continua identado aqui dentro...)
+    if show_vias:
+         folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
+
+    # --- CARTAS AIS (L1, L2... H1, H2...) ---
     lista_baixa = []
     for label, layer_id in LINKS_BAIXA.items():
-        lyr = folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=layer_id, fmt="image/png", transparent=True, name=f"Carta {label}", overlay=True, control=True, show=False, attr="DECEA", version="1.1.1", styles="").add_to(m)
+        lyr = folium.WmsTileLayer(
+            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+            layers=layer_id,
+            fmt="image/png",
+            transparent=True,
+            name=f"Carta {label}",
+            overlay=True,
+            show=False, # Começam desligadas para não poluir
+            attr="DECEA",
+            version="1.1.1"
+        ).add_to(m)
         lista_baixa.append(lyr)
 
     lista_alta = []
     for label, layer_id in LINKS_ALTA.items():
-        lyr = folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=layer_id, fmt="image/png", transparent=True, name=f"Carta {label}", overlay=True, control=True, show=False, attr="DECEA", version="1.1.1", styles="").add_to(m)
+        lyr = folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=layer_id, fmt="image/png", transparent=True, name=f"Carta {label}", overlay=True, show=False, attr="DECEA", version="1.1.1").add_to(m)
         lista_alta.append(lyr)
 
+    # Organiza as cartas em grupos no menu
     plugins.GroupedLayerControl(
         groups={"📉 CARTAS BAIXA": lista_baixa, "📈 CARTAS ALTA": lista_alta},
         exclusive_groups=False, collapsed=True, position='topright'
     ).add_to(m)
 
-    # Plotar aeródromos e rota
+    # --- AERÓDROMOS E ROTA ---
     dados_missao = []
     for icao in list(set([origem, destino, alternativa] + OUTROS_ADS)):
         try:
@@ -151,10 +150,15 @@ if aba == "🛰️ Briefing em Tempo Real":
             folium.Marker(COORDS[icao], popup=f"<b>{icao}</b><br>{metar}", icon=folium.Icon(color=cor, icon='plane', prefix='fa')).add_to(m)
         except: continue
 
-    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5).add_to(m)
+    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5, opacity=0.8).add_to(m)
+    
+    # Controles de tela cheia e camadas
+    plugins.Fullscreen().add_to(m)
+    folium.LayerControl(position='topright', collapsed=True).add_to(m)
+
     st_folium(m, width="100%", height=650)
 
-    # Detalhamento (Cards)
+    # --- CARDS METAR/TAF ---
     st.divider()
     if dados_missao:
         cols = st.columns(3)
@@ -165,7 +169,7 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
-# --- OUTRAS ABAS ---
+# --- ABAS DE VÍDEO E MATERIAIS ---
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Aulas de Meteorologia")
     st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg&t=4s")
