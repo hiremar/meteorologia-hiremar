@@ -142,14 +142,20 @@ if aba == "🛰️ Briefing em Tempo Real":
     if show_vias:
         folium.TileLayer(tiles='https://tile.wayfinding.pro/v1/enroute/{z}/{x}/{y}.png', attr='Wayfinding Pro', name='Aerovias', overlay=True).add_to(m)
 
-    # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) ---
+    # --- INCLUSÃO DAS CARTAS AIS (ESTILO COLAB - FUNCIONA TUDO) ---
     lista_baixa = []
     for label, layer_id in LINKS_BAIXA.items():
         lyr = folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
             layers=layer_id.replace("%3A", ":"),
-            fmt="image/png", transparent=True, name=f"Carta {label}",
-            overlay=True, control=True, show=False, attr="DECEA"
+            fmt="image/png",
+            transparent=True,
+            name=f"Carta {label}",
+            overlay=True,
+            control=True,
+            show=False,
+            attr="DECEA",
+            # Removidos: crs e version (deixa o Folium usar o padrão dele igual no Colab)
         ).add_to(m)
         lista_baixa.append(lyr)
 
@@ -158,8 +164,13 @@ if aba == "🛰️ Briefing em Tempo Real":
         lyr = folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
             layers=layer_id.replace("%3A", ":"),
-            fmt="image/png", transparent=True, name=f"Carta {label}",
-            overlay=True, control=True, show=False, attr="DECEA"
+            fmt="image/png",
+            transparent=True,
+            name=f"Carta {label}",
+            overlay=True,
+            control=True,
+            show=False,
+            attr="DECEA"
         ).add_to(m)
         lista_alta.append(lyr)
 
@@ -233,3 +244,4 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
+
