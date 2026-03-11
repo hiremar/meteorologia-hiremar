@@ -157,9 +157,11 @@ elif aba == "📚 Materiais e Links":
     st.title("📚 Biblioteca Digital")
     st.markdown("""
     ### 📖 Manuais Oficiais
-    - [MCA 105-2 (Meteorologia)](https://publicacoes.decea.mil.br/)
-    - [ICA 100-12 (Cartas)](https://aisweb.decea.mil.br/)
+    - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
+    - [ICA 105-17 (Manual de Centros Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
     ### 🔗 Links Úteis
-    - [REDEMET](https://www.redemet.decea.mil.br/)
+    - [REDEMET](https://redemet.decea.mil.br/)
     - [AISWEB](https://aisweb.decea.mil.br/)
+    - [Aviation Weather Center ] (https://aviationweather.gov/)
     """)
+
