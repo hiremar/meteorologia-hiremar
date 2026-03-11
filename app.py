@@ -143,6 +143,8 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     # --- INCLUSÃO DAS CARTAS AIS (ALTA E BAIXA) COM CORREÇÃO ---
     lista_baixa = []
+    # --- INCLUSÃO DAS CARTAS AIS (CORREÇÃO DEFINITIVA PROJEÇÃO EPSG:4326) ---
+    lista_baixa = []
     for label, layer_id in LINKS_BAIXA.items():
         lyr = folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
@@ -155,7 +157,8 @@ if aba == "🛰️ Briefing em Tempo Real":
             show=False,
             attr="DECEA",
             version="1.1.1",
-            styles=""
+            styles="",
+            crs="EPSG:4326"  # <--- ADICIONE ESTA LINHA AQUI
         ).add_to(m)
         lista_baixa.append(lyr)
 
@@ -172,7 +175,8 @@ if aba == "🛰️ Briefing em Tempo Real":
             show=False,
             attr="DECEA",
             version="1.1.1",
-            styles=""
+            styles="",
+            crs="EPSG:4326"  # <--- ADICIONE ESTA LINHA AQUI TAMBÉM
         ).add_to(m)
         lista_alta.append(lyr)
 
@@ -243,3 +247,4 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
+
