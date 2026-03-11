@@ -162,7 +162,8 @@ elif aba == "📚 Materiais e Links":
     ### 🔗 Links Úteis
     - [REDEMET](https://redemet.decea.mil.br/)
     - [AISWEB](https://aisweb.decea.mil.br/)
-    - [AWC](https://aviationweather.gov/)
+    - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
