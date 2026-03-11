@@ -10,13 +10,13 @@ from folium import plugins
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Briefing Meteorológico Prof. Hiremar")
 
-# --- ESTILO CSS PARA O MAPA ---
+# --- CORREÇÃO DO ERRO: ESTILO CSS ---
 st.markdown("""
     <style>
     .main .block-container { padding-top: 1rem; }
     iframe { border-radius: 10px; }
     </style>
-    """, unsafe_allow_name_allowed=True)
+    """, unsafe_allow_html=True) # Parâmetro corrigido aqui
 
 # --- BARRA LATERAL (PAINEL DE CONTROLE) ---
 st.sidebar.title("🛠️ Painel de Controle")
@@ -32,8 +32,7 @@ st.sidebar.subheader("📡 Camadas Meteorológicas")
 show_tsc = st.sidebar.checkbox("Exibir Satélite / TSC", value=True)
 show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
-# --- CONFIGURAÇÕES DE CARTAS ENRC ---
-# Links extraídos do arquivo Cartas AIS.txt 
+# --- CONFIGURAÇÕES DE CARTAS ENRC (Extraídas de Cartas AIS.txt) --- [cite: 1]
 LINKS_BAIXA = {
     "L1": "ICA%3AENRC_L1", "L2": "ICA%3AENRC_L2", "L3": "ICA%3AENRC_L3",
     "L4": "ICA%3AENRC_L4", "L5": "ICA%3AENRC_L5", "L6": "ICA%3AENRC_L6",
@@ -68,13 +67,13 @@ def sigmet_to_decimal(texto):
     return [[-(int(m[1]) + int(m[2])/60) if m[0] == 'S' else (int(m[1]) + int(m[2])/60),
              -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
 
-# --- TÍTULO PRINCIPAL ---
+# --- TÍTULO ---
 st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-# --- CONSTRUÇÃO DO MAPA ---
+# --- MAPA ---
 m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
 
-# 1. Mapas de Fundo
+# 1. Planos de Fundo
 folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Noite)", control=True).add_to(m)
 folium.TileLayer('OpenStreetMap', name="Mapa Geográfico", control=True).add_to(m)
 folium.TileLayer(
@@ -82,7 +81,7 @@ folium.TileLayer(
     attr='Esri Satellite', name='Satélite (Google Earth)', control=True
 ).add_to(m)
 
-# 2. Satélite / TSC (Camada Dinâmica REDEMET)
+# 2. Satélite / TSC
 if show_tsc:
     folium.WmsTileLayer(
         url="https://redemet.decea.mil.br/geoserver/wms",
@@ -104,7 +103,7 @@ if show_sigmet:
                 ).add_to(m)
     except: pass
 
-# 4. Agrupamento de Cartas ENRC (L e H) 
+# 4. Processamento de Cartas (Sub-camadas)
 lista_baixa = []
 for label, layer_id in LINKS_BAIXA.items():
     lyr = folium.WmsTileLayer(
@@ -125,7 +124,7 @@ for label, layer_id in LINKS_ALTA.items():
     ).add_to(m)
     lista_alta.append(lyr)
 
-# 5. Adicionando o Controle de Grupos Colapsáveis
+# 5. Menu Sanfona (GroupedLayerControl)
 plugins.GroupedLayerControl(
     groups={
         "📉 CARTAS BAIXA (ENRC L)": lista_baixa,
@@ -136,7 +135,7 @@ plugins.GroupedLayerControl(
     position='topright'
 ).add_to(m)
 
-# 6. Aeródromos e Rota
+# 6. Marcadores e Rota
 dados_missao = []
 todos_para_mapa = list(set([origem, destino, alternativa] + OUTROS_ADS))
 
@@ -157,15 +156,15 @@ for icao in todos_para_mapa:
 
 folium.PolyLine([COORDS[origem], COORDS[destino]], color="cyan", weight=4, opacity=0.8, dash_array='10').add_to(m)
 
-# 7. Extras do Mapa
+# 7. Controles de Mapa
 plugins.Fullscreen().add_to(m)
 plugins.MeasureControl(position='topleft', primary_length_unit='nm').add_to(m)
 folium.LayerControl(position='topright', collapsed=True).add_to(m)
 
-# Renderização do Mapa no Streamlit
+# Exibir Mapa
 st_folium(m, width=1400, height=650)
 
-# --- CARDS DE DETALHAMENTO ---
+# --- CARDS FINAIS ---
 st.divider()
 st.subheader("🔍 Detalhamento Meteorológico (METAR/TAF)")
 if dados_missao:
