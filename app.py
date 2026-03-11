@@ -60,9 +60,9 @@ if not api_key:
 
 # --- CONFIGURAÇÕES DE CARTAS ENRC ---
 LINKS_BAIXA = {
-    "L1": "ICA%3AENRC_L1", "L2": "ICA%3AENRC_L2", "L3": "ICA%3AENRC_L3",
+    "L2": "ICA%3AENRC_L2", "L3": "ICA%3AENRC_L3",
     "L4": "ICA%3AENRC_L4", "L5": "ICA%3AENRC_L5", "L6": "ICA%3AENRC_L6",
-    "L7": "ICA%3AENRC_L7", "L8": "ICA%3AENRC_L8", "L9": "ICA%3AENRC_L9"
+    "L7": "ICA%3AENRC_L7", "L8": "ICA%3AENRC_L8", "L9": "ICA%3AENRC_L9", "L1": "ICA%3AENRC_L1"
 }
 
 LINKS_ALTA = {
@@ -233,3 +233,4 @@ elif aba == "📚 Materiais e Links":
     * [Portal REDEMET](https://www.redemet.decea.mil.br/)
     * [AISWEB - Informações Aeronáuticas](https://aisweb.decea.mil.br/)
     """)
+
