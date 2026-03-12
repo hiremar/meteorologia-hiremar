@@ -6,7 +6,4 @@ pandas
 herbie-data
 xarray
 cfgrib
-herbie-data
-cfgrib
-eccodes
-
+eccodes-python
