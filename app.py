@@ -4,6 +4,9 @@ import requests
 import re
 from streamlit_folium import st_folium
 from folium import plugins
+from herbie import Herbie
+import xarray as xr
+import numpy as np
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
@@ -165,6 +168,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
