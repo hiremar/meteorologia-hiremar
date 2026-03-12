@@ -72,8 +72,7 @@ def carregar_dados_gfs():
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
-aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
-
+aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "🚀 Modelo GFS (Vento/Gelo)", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
@@ -189,5 +188,6 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
