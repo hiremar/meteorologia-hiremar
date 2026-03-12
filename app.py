@@ -166,6 +166,42 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
+elif aba == "🚀 Modelo GFS (Vento/Gelo)":
+    st.title("🚀 Análise de Previsão Numérica - GFS")
+    st.info("Dados globais processados a cada 12h. Fonte: NOAA/NOMADS.")
+
+    # Seletor de Nível de Voo na Sidebar específica desta aba
+    fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
+    pressao_hpa = NIVEIS_MAP[fl_alvo]
+
+    with st.spinner(f"Acessando NOMADS para processar o {fl_alvo}..."):
+        ds = carregar_dados_gfs()
+        
+        if ds:
+            st.success(f"Dados carregados para o nível {fl_alvo} ({pressao_hpa} hPa)")
+            
+            # 1. Filtro de dados para o nível selecionado
+            # O method="nearest" garante que ele pegue o nível mais próximo disponível no Grib
+            data_nivel = ds.sel(isobaricInhPa=pressao_hpa, method="nearest")
+            
+            # 2. Mapa específico para o GFS
+            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
+            
+            # Lógica de Alerta de Gelo (Sua experiência + AC 91-74B)
+            if fl_alvo in ["FL120", "FL140", "FL180", "FL220", "FL240"]:
+                st.warning(f"⚠️ Nível {fl_alvo}: Faixa de alta probabilidade de Gelo Severo no Brasil (FL120-FL240).")
+                st.write("Verifique a umidade relativa e temperatura no perfil vertical para confirmar nuvens super-resfriadas.")
+
+            # Exibe o mapa
+            plugins.Fullscreen().add_to(m_gfs)
+            st_folium(m_gfs, width="100%", height=600)
+            
+            # Aqui no futuro adicionaremos:
+            # - Camadas de contorno para Umidade > 70% (Nuvens)
+            # - Setas de Vento (Quiver plot)
+        else:
+            st.error("Não foi possível baixar os dados do Grib2. Verifique se as bibliotecas 'herbie-data' e 'cfgrib' estão no requirements.txt.")
+
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
     col1, col2 = st.columns(2)
@@ -188,6 +224,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
