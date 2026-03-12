@@ -40,7 +40,7 @@ def sigmet_to_decimal(texto):
     padrao = r'([NS])(\d{2})(\d{2})\s([WE])(\d{3})(\d{2})'
     matches = re.findall(padrao, texto)
     return [[-(int(m[1]) + int(m[2])/60) if m[0] == 'S' else (int(m[1]) + int(m[2])/60),
-              -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
+             -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
 
 def get_sigmet_color(msg):
     msg = msg.upper()
@@ -48,8 +48,9 @@ def get_sigmet_color(msg):
     if "ICE" in msg: return "skyblue"
     if "TURB" in msg: return "yellow"
     return "orange"
+# --- FUNÇÕES PARA O MODELO GFS (PROVISÓRIO PARA TESTE) ---
 
-# --- BLOCO GFS (NOVO) ---
+# Tabela de níveis que você pediu
 NIVEIS_MAP = {
     "SFC": 1013, "FL050": 850, "FL080": 750, "FL100": 700, 
     "FL120": 650, "FL140": 600, "FL180": 500, "FL220": 450, 
@@ -57,11 +58,13 @@ NIVEIS_MAP = {
     "FL360": 225, "FL410": 200
 }
 
-@st.cache_data(ttl=43200)
+@st.cache_data(ttl=43200) # Cache de 12 horas para não sobrecarregar a NOAA
 def carregar_dados_gfs():
     try:
-        # Busca a análise mais recente disponível
+        # Busca a rodada mais recente (f000 = análise atual)
+        # O Herbie buscará automaticamente o ciclo (00z, 06z, 12z ou 18z)
         H = Herbie(model="gfs", product="pgrb2.0p25", fxx=0)
+        # Baixa apenas o necessário: Vento (U/V), Temperatura (TMP) e Umidade (RH)
         ds = H.xarray(":(UGRD|VGRD|TMP|RH):")
         return ds
     except Exception as e:
@@ -69,48 +72,122 @@ def carregar_dados_gfs():
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
-# Adicionada a aba do GFS aqui:
-aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "🚀 Previsão GFS & Gelo", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
+aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
 
 if aba == "🛰️ Briefing em Tempo Real":
-    # (Mantém todo o seu código original de briefing aqui...)
     st.sidebar.subheader("📍 Planejamento de Voo")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
     origem = st.sidebar.selectbox("Origem", lista_ads, index=0)
     destino = st.sidebar.selectbox("Destino", lista_ads, index=8)
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
-    # ... Restante do código do Briefing ...
+
+    st.sidebar.subheader("📡 Camadas Ativas")
+    show_tsc = st.sidebar.checkbox("Exibir Satélite / TSC", value=True)
+    show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
+    
+    # Nova subjanela na sidebar para as Cartas (Substituindo Aerovias)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
+    cartas_baixa_sel = st.sidebar.multiselect("Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)])
+    cartas_alta_sel = st.sidebar.multiselect("Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)])
+
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
-    m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles='CartoDB dark_matter')
+
+    # 1. Inicialização do Mapa (Ordem de pintura importa)
+    m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
+    
+    # Camadas de Fundo
+    folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+                     attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False).add_to(m)
+    folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
+
+    # 2. Cartas ENRC Selecionadas (Renderizadas antes dos marcadores)
+    for carta in cartas_baixa_sel:
+        folium.WmsTileLayer(
+            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+            layers=f"ICA:ENRC_{carta}",
+            fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
+        ).add_to(m)
+
+    for carta in cartas_alta_sel:
+        folium.WmsTileLayer(
+            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
+            layers=f"ICA:ENRC_{carta}",
+            fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
+        ).add_to(m)
+
+    # 3. Camadas Meteorológicas
+    if show_tsc:
+        folium.WmsTileLayer(url="https://redemet.decea.mil.br/geoserver/wms", layers="satelite:goes16_ch13_realce",
+                            fmt="image/png", transparent=True, name="Nuvens / TSC", overlay=True, opacity=0.6).add_to(m)
+
+    if show_sigmet:
+        try:
+            s_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}").json()
+            for s in s_res.get('data', {}).get('data', []):
+                pts = sigmet_to_decimal(s['mens'])
+                if len(pts) >= 3:
+                    folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
+        except: pass
+
+    # 4. Marcadores e Rota (No topo de tudo)
+    COORDS = {"SBGR": [-23.432, -46.470], "SBGL": [-22.810, -43.250], "SBSP": [-23.626, -46.656],
+              "SBRJ": [-22.910, -43.162], "SBRF": [-8.126, -34.923],  "SBKP": [-23.007, -47.134],
+              "SBPA": [-29.994, -51.171], "SBCT": [-25.531, -49.175], "SBBR": [-15.869, -47.917], "SBBH": [-19.624, -43.898]}
+    
+    dados_missao = []
+    for icao in list(dict.fromkeys([origem, destino, alternativa])):
+        try:
+            m_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}").json()
+            t_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}").json()
+            metar = m_dat['data']['data'][0]['mens']
+            taf = t_dat['data']['data'][0]['mens']
+            dados_missao.append({"ICAO": icao, "METAR": metar, "TAF": taf})
+            
+            cor = 'blue' if icao in [origem, destino] else 'purple'
+            folium.Marker(COORDS[icao], popup=f"<b>{icao}</b>", icon=folium.Icon(color=cor, icon='plane', prefix='fa')).add_to(m)
+        except: continue
+
+    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5).add_to(m)
+    
+    # Controles
+    plugins.Fullscreen().add_to(m)
+    folium.LayerControl(position='topright').add_to(m)
+
     st_folium(m, width="100%", height=600)
 
-elif aba == "🚀 Previsão GFS & Gelo":
-    st.title("🚀 Previsão Numérica GFS e Análise de Gelo")
-    st.write("Processando dados do modelo global da NOAA (Ciclo 12h) para análise de vento e gelo (AC 91-74B).")
-    
-    fl_alvo = st.sidebar.selectbox("Selecione o Nível de Voo (FL):", list(NIVEIS_MAP.keys()))
-    pressao = NIVEIS_MAP[fl_alvo]
-
-    with st.spinner("Buscando dados no servidor da NOAA..."):
-        ds = carregar_dados_gfs()
-        if ds:
-            st.success(f"Dados do GFS carregados com sucesso para o {fl_alvo}!")
-            # Aqui no futuro desenharemos as camadas de vento e gelo
-            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
-            
-            if fl_alvo in ["FL120", "FL140", "FL180", "FL220", "FL240"]:
-                st.warning("⚠️ Atenção: Nível selecionado dentro da faixa crítica de gelo severo no Brasil.")
-            
-            st_folium(m_gfs, width="100%", height=600)
-        else:
-            st.error("Servidor NOAA temporariamente indisponível.")
+    # Detalhamento METAR/TAF
+    st.subheader("🔍 Dados Meteorológicos da Rota")
+    cols = st.columns(3)
+    for i, dado in enumerate(dados_missao):
+        if i < 3:
+            with cols[i].expander(f"📍 {dado['ICAO']}", expanded=True):
+                st.markdown("**METAR:**")
+                st.code(dado['METAR'], language="fix")
+                st.markdown("**TAF:**")
+                st.code(dado['TAF'], language="fix")
 
 elif aba == "📺 Aulas em Vídeo":
-    # (Seu código original de aulas...)
     st.title("📺 Centro de Treinamento")
-    st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("🎥 Aula 1: Altimetria - Ajuste: QNH / QNE")
+        st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg") 
+    with col2:
+        st.subheader("🎥 Aula 2: Satélite, SIGMET e GELO")
+        st.video("https://www.youtube.com/watch?v=KoyZS3iCeM0")
 
 elif aba == "📚 Materiais e Links":
-    # (Seu código original de links...)
     st.title("📚 Biblioteca Digital")
-    st.markdown("- [ICA 105-15/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-15)")
+    st.markdown("""
+    ### 📖 Manuais Oficiais
+    - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
+    - [ICA 105-16/2025 (Códigos Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
+    - [ICA 105-17/2025 (Manual de Centros Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
+    ### 🔗 Links Úteis
+    - [REDEMET](https://redemet.decea.mil.br/)
+    - [AISWEB](https://aisweb.decea.mil.br/)
+    - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
+    """)
+
+
