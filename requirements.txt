@@ -3,3 +3,6 @@ folium
 streamlit-folium
 requests
 pandas
+herbie-data
+xarray
+cfgrib
