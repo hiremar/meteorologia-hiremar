@@ -48,6 +48,27 @@ def get_sigmet_color(msg):
     if "ICE" in msg: return "skyblue"
     if "TURB" in msg: return "yellow"
     return "orange"
+# --- FUNÇÕES PARA O MODELO GFS (PROVISÓRIO PARA TESTE) ---
+
+# Tabela de níveis que você pediu
+NIVEIS_MAP = {
+    "SFC": 1013, "FL050": 850, "FL080": 750, "FL100": 700, 
+    "FL120": 650, "FL140": 600, "FL180": 500, "FL220": 450, 
+    "FL240": 400, "FL260": 350, "FL300": 300, "FL340": 250, 
+    "FL360": 225, "FL410": 200
+}
+
+@st.cache_data(ttl=43200) # Cache de 12 horas para não sobrecarregar a NOAA
+def carregar_dados_gfs():
+    try:
+        # Busca a rodada mais recente (f000 = análise atual)
+        # O Herbie buscará automaticamente o ciclo (00z, 06z, 12z ou 18z)
+        H = Herbie(model="gfs", product="pgrb2.0p25", fxx=0)
+        # Baixa apenas o necessário: Vento (U/V), Temperatura (TMP) e Umidade (RH)
+        ds = H.xarray(":(UGRD|VGRD|TMP|RH):")
+        return ds
+    except Exception as e:
+        return None
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
@@ -168,6 +189,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
