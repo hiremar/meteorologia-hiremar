@@ -67,32 +67,39 @@ NIVEIS_MAP = {
     "FL360": 225, "FL410": 200
 }
 
-@st.cache_data(ttl=3600) 
+@st.cache_data(ttl=3600)
 def carregar_dados_gfs(fl_alvo):
     try:
+        # Mapeamento de pressão para altitude aproximada em metros (para a API)
+        # GFS via Open-Meteo usa níveis de pressão ou altitude.
         pressao = NIVEIS_MAP[fl_alvo]
-        # Forçamos o Herbie a olhar primeiro no Google Cloud (mais rápido que o NOMADS)
-        H = Herbie(
-            model="gfs",
-            product="pgrb2.0p25",
-            date=datetime.utcnow(),
-            fxx=0,
-            priority=['google', 'aws', 'nomads'] # Ordem de servidores
-        )
         
-        # Filtro refinado
-        search_pattern = f": (UGRD|VGRD|TMP|RH):{pressao} mb:"
+        # Fazemos uma requisição simples para o centro do Brasil (ou área de interesse)
+        # A API retorna os dados do GFS já processados
+        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,relative_humidity_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
         
-        # O pulo do gato: tentar carregar com o motor simplificado primeiro
-        ds = H.xarray(search_pattern, engine="cfgrib", backend_kwargs={'errors': 'ignore'})
+        response = requests.get(url).json()
         
-        rodada_info = f"Rodada: {H.date.strftime('%d/%m/%Y %HZ')}"
-        return ds, rodada_info
+        # Criamos um "objeto" que imita o seu dataset anterior para não quebrar o resto do código
+        class MockDS:
+            def __init__(self, data, p):
+                self.t = np.array(data['hourly'][f'temperature_{p}hPa']) + 273.15 # Volta para Kelvin
+                self.r = np.array(data['hourly'][f'relative_humidity_{p}hPa'])
+                # Criamos um valor médio para o seu cálculo de gelo
+                self.t_mean = np.mean(self.t)
+            def sel(self, **kwargs): return self # Mock do método sel
+            @property
+            def t(self): return self._t # Mock para o seu data_nivel.t
+        
+        # Para o seu código atual de temperatura média:
+        ds_mock = type('obj', (object,), {
+            't': type('obj', (object,), {'mean': lambda: np.mean(response['hourly'][f'temperature_{pressao}hPa']) + 273.15})
+        })
+        
+        rodada_info = "Dados: GFS via Open-Meteo (Real-time)"
+        return ds_mock, rodada_info
     except Exception as e:
-        # Se der erro, tentamos a rodada de 6h atrás automaticamente
-        st.sidebar.warning("Tentando rodada anterior...")
         return None, None
-
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
