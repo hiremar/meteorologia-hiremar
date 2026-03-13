@@ -184,37 +184,34 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
-elif aba == "🚀 Modelo GFS (Vento/Gelo)":
-    st.title("🚀 Análise de Previsão Numérica - GFS")
-    
-    fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
-    pressao_hpa = NIVEIS_MAP[fl_alvo]
-
-    with st.spinner(f"Buscando dados do nível {fl_alvo}..."):
-        ds, rodada_info = carregar_dados_gfs(fl_alvo)
+@st.cache_resource(ttl=3600)
+def carregar_dados_gfs(fl_alvo):
+    try:
+        pressao = NIVEIS_MAP.get(fl_alvo, 500)
         
-        if ds:
-            st.success(f"Dados carregados para o nível {fl_alvo}")
-            st.info(f"📡 {rodada_info}")
+        # URL atualizada com Vento e Temperatura
+        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
+        
+        r = requests.get(url)
+        if r.status_code != 200:
+            return None, "Erro na API"
             
-            # AGORA LEMOS DO DICIONÁRIO:
-            temp_media_c = ds['temp_media_c']
-            
-            # Exibição da análise para o aluno
-            st.metric(label=f"Temperatura Média Estimada ({fl_alvo})", value=f"{temp_media_c:.1f} °C")
-            
-            if temp_media_c < 0:
-                st.warning(f"❄️ Atenção: Temperatura abaixo de 0°C. Risco de formação de gelo em nuvens (AC 91-74B).")
-            else:
-                st.success(f"✅ Temperatura acima de 0°C. Menor probabilidade de gelo estrutural.")
-
-            # Mapa
-            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
-            plugins.Fullscreen().add_to(m_gfs)
-            st_folium(m_gfs, width="100%", height=600)
-        else:
-            st.error("Não foi possível conectar à base de dados do GFS.")
-
+        response = r.json()
+        
+        # Pegamos o primeiro índice da previsão (tempo atual)
+        temp_atual = response['hourly'][f'temperature_{pressao}hPa'][0]
+        wind_spd = response['hourly'][f'windspeed_{pressao}hPa'][0]
+        wind_dir = response['hourly'][f'winddirection_{pressao}hPa'][0]
+        
+        dados_processados = {
+            'temp_media_c': temp_atual,
+            'wind_spd': wind_spd,
+            'wind_dir': wind_dir,
+            'rodada': "GFS via Open-Meteo (Real-time)"
+        }
+        return dados_processados, dados_processados['rodada']
+    except Exception as e:
+        return None, str(e)
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
     col1, col2 = st.columns(2)
@@ -237,6 +234,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
