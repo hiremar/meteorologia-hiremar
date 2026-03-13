@@ -212,6 +212,8 @@ def carregar_dados_gfs(fl_alvo):
         return dados_processados, dados_processados['rodada']
     except Exception as e:
         return None, str(e)
+
+
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
     col1, col2 = st.columns(2)
@@ -234,6 +236,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
