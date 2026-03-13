@@ -64,18 +64,32 @@ NIVEIS_MAP = {
     "FL360": 225, "FL410": 200
 }
 
-@st.cache_data(ttl=43200) # Cache de 12 horas para não sobrecarregar a NOAA
-def carregar_dados_gfs():
+@st.cache_data(ttl=3600) 
+def carregar_dados_gfs(fl_alvo):
     try:
-        # Busca a rodada mais recente (f000 = análise atual)
-        # O Herbie buscará automaticamente o ciclo (00z, 06z, 12z ou 18z)
-        H = Herbie(model="gfs", product="pgrb2.0p25", fxx=0)
-        # Baixa apenas o necessário: Vento (U/V), Temperatura (TMP) e Umidade (RH)
-        ds = H.xarray(":(UGRD|VGRD|TMP|RH):")
-        return ds
-    except Exception as e:
-        return None
-
+        pressao = NIVEIS_MAP[fl_alvo]
+        # Tenta a rodada mais recente via UTC
+        H = Herbie(
+            model="gfs",
+            product="pgrb2.0p25",
+            date=datetime.utcnow(),
+            fxx=0,
+            overwrite=False
+        )
+        # O segredo está neste filtro abaixo: ele baixa só o nível que você escolheu!
+        search_pattern = f": (UGRD|VGRD|TMP|RH):{pressao} mb:"
+        ds = H.xarray(search_pattern, engine="cfgrib")
+        rodada_info = f"Rodada: {H.date.strftime('%d/%m/%Y %HZ')}"
+        return ds, rodada_info
+        
+    except Exception:
+        try:
+             # Fallback se a rodada atual ainda não saiu
+             H = Herbie(model="gfs", product="pgrb2.0p25", fxx=0, priority=['nomads'])
+             ds = H.xarray(f": (UGRD|VGRD|TMP|RH):{pressao} mb:", engine="cfgrib")
+             return ds, f"Rodada (Atraso): {H.date.strftime('%d/%m/%Y %HZ')}"
+        except:
+             return None, None
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
 aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "🚀 Modelo GFS (Vento/Gelo)", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
@@ -174,39 +188,38 @@ if aba == "🛰️ Briefing em Tempo Real":
 
 elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     st.title("🚀 Análise de Previsão Numérica - GFS")
-    st.info("Dados globais processados a cada 12h. Fonte: NOAA/NOMADS.")
-
-    # Seletor de Nível de Voo na Sidebar específica desta aba
+    
+    # Seletor de Nível de Voo
     fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
     pressao_hpa = NIVEIS_MAP[fl_alvo]
 
     with st.spinner(f"Acessando NOMADS para processar o {fl_alvo}..."):
-        ds = carregar_dados_gfs()
+        # Aqui chamamos a função nova com os dois retornos
+        ds, rodada_info = carregar_dados_gfs(fl_alvo)
         
         if ds:
             st.success(f"Dados carregados para o nível {fl_alvo} ({pressao_hpa} hPa)")
+            st.info(f"📡 {rodada_info}")
             
-            # 1. Filtro de dados para o nível selecionado
-            # O method="nearest" garante que ele pegue o nível mais próximo disponível no Grib
+            # O xarray já vem filtrado, mas garantimos a seleção aqui
             data_nivel = ds.sel(isobaricInhPa=pressao_hpa, method="nearest")
             
-            # 2. Mapa específico para o GFS
+            # Criando o mapa específico
             m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
             
-            # Lógica de Alerta de Gelo (Sua experiência + AC 91-74B)
+            # Lógica de Alerta de Gelo (Professor Hiremar + AC 91-74B)
+            # Pegamos a temperatura (t) e umidade (r) do dataset
+            temp_media = float(data_nivel.t.mean()) - 273.15 # Kelvin para Celsius
+            
             if fl_alvo in ["FL120", "FL140", "FL180", "FL220", "FL240"]:
-                st.warning(f"⚠️ Nível {fl_alvo}: Faixa de alta probabilidade de Gelo Severo no Brasil (FL120-FL240).")
-                st.write("Verifique a umidade relativa e temperatura no perfil vertical para confirmar nuvens super-resfriadas.")
+                st.warning(f"⚠️ Nível {fl_alvo}: Faixa de alta probabilidade de Gelo no Brasil.")
+                st.write(f"Temperatura média no nível: {temp_media:.1f}°C")
 
-            # Exibe o mapa
             plugins.Fullscreen().add_to(m_gfs)
             st_folium(m_gfs, width="100%", height=600)
             
-            # Aqui no futuro adicionaremos:
-            # - Camadas de contorno para Umidade > 70% (Nuvens)
-            # - Setas de Vento (Quiver plot)
         else:
-            st.error("Não foi possível baixar os dados do Grib2. Verifique se as bibliotecas 'herbie-data' e 'cfgrib' estão no requirements.txt.")
+            st.error("Não foi possível processar o Grib2. Verifique o packages.txt no seu GitHub.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
@@ -230,5 +243,3 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
-
-
