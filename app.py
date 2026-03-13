@@ -68,33 +68,28 @@ NIVEIS_MAP = {
 }
 
 @st.cache_resource(ttl=3600)
-def carregar_dados_gfs(fl_alvo):
+def carregar_dados_gfs(fl_alvo, lat, lon):
     try:
         pressao = NIVEIS_MAP.get(fl_alvo, 500)
-        
-        # URL atualizada com Vento e Temperatura
-        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
+        # Agora a URL usa a lat e lon que vieram do clique
+        url = f"https://api.open-meteo.com/v1/gfs?latitude={lat}&longitude={lon}&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
         
         r = requests.get(url)
-        if r.status_code != 200:
-            return None, "Erro na API"
-            
         response = r.json()
         
-        # Pegamos o primeiro índice da previsão (tempo atual)
         temp_atual = response['hourly'][f'temperature_{pressao}hPa'][0]
         wind_spd = response['hourly'][f'windspeed_{pressao}hPa'][0]
         wind_dir = response['hourly'][f'winddirection_{pressao}hPa'][0]
         
-        dados_processados = {
-            'temp_media_c': temp_atual,
+        return {
+            'temp': temp_atual,
             'wind_spd': wind_spd,
             'wind_dir': wind_dir,
-            'rodada': "GFS via Open-Meteo (Real-time)"
+            'lat': lat,
+            'lon': lon
         }
-        return dados_processados, dados_processados['rodada']
-    except Exception as e:
-        return None, str(e)
+    except:
+        return None
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
@@ -240,3 +235,4 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
