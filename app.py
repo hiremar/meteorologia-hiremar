@@ -70,23 +70,31 @@ NIVEIS_MAP = {
 @st.cache_resource(ttl=3600)
 def carregar_dados_gfs(fl_alvo):
     try:
-        pressao = NIVEIS_MAP[fl_alvo]
-        # Pegamos os dados de um ponto central (Brasília) para referência de temperatura do nível
-        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa&forecast_days=1"
-        response = requests.get(url).json()
+        pressao = NIVEIS_MAP.get(fl_alvo, 500)
         
-        # Calculamos a média das temperaturas previstas para as próximas 24h no nível escolhido
-        temps = response['hourly'][f'temperature_{pressao}hPa']
-        temp_media_c = sum(temps) / len(temps)
+        # URL atualizada com Vento e Temperatura
+        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
         
-        # Criamos um dicionário simples com os resultados
+        r = requests.get(url)
+        if r.status_code != 200:
+            return None, "Erro na API"
+            
+        response = r.json()
+        
+        # Pegamos o primeiro índice da previsão (tempo atual)
+        temp_atual = response['hourly'][f'temperature_{pressao}hPa'][0]
+        wind_spd = response['hourly'][f'windspeed_{pressao}hPa'][0]
+        wind_dir = response['hourly'][f'winddirection_{pressao}hPa'][0]
+        
         dados_processados = {
-            'temp_media_c': temp_media_c,
-            'rodada': "GFS via Open-Meteo (Atualizado)"
+            'temp_media_c': temp_atual,
+            'wind_spd': wind_spd,
+            'wind_dir': wind_dir,
+            'rodada': "GFS via Open-Meteo (Real-time)"
         }
         return dados_processados, dados_processados['rodada']
     except Exception as e:
-        return None, None
+        return None, str(e)
 
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
@@ -184,35 +192,31 @@ if aba == "🛰️ Briefing em Tempo Real":
                 st.markdown("**TAF:**")
                 st.code(dado['TAF'], language="fix")
 
-@st.cache_resource(ttl=3600)
-def carregar_dados_gfs(fl_alvo):
-    try:
-        pressao = NIVEIS_MAP.get(fl_alvo, 500)
-        
-        # URL atualizada com Vento e Temperatura
-        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
-        
-        r = requests.get(url)
-        if r.status_code != 200:
-            return None, "Erro na API"
-            
-        response = r.json()
-        
-        # Pegamos o primeiro índice da previsão (tempo atual)
-        temp_atual = response['hourly'][f'temperature_{pressao}hPa'][0]
-        wind_spd = response['hourly'][f'windspeed_{pressao}hPa'][0]
-        wind_dir = response['hourly'][f'winddirection_{pressao}hPa'][0]
-        
-        dados_processados = {
-            'temp_media_c': temp_atual,
-            'wind_spd': wind_spd,
-            'wind_dir': wind_dir,
-            'rodada': "GFS via Open-Meteo (Real-time)"
-        }
-        return dados_processados, dados_processados['rodada']
-    except Exception as e:
-        return None, str(e)
+elif aba == "🚀 Modelo GFS (Vento/Gelo)":
+    st.title("🚀 Análise de Previsão Numérica - GFS")
+    
+    fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
 
+    with st.spinner(f"Buscando dados do {fl_alvo}..."):
+        ds, rodada_info = carregar_dados_gfs(fl_alvo)
+        
+        if ds:
+            st.success(f"Dados carregados para o {fl_alvo}")
+            
+            # Dashboard de métricas
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Temperatura", f"{ds['temp_media_c']:.1f} °C")
+            c2.metric("Vento (Velocidade)", f"{ds['wind_spd']:.0f} km/h")
+            c3.metric("Vento (Direção)", f"{ds['wind_dir']:.0f}°")
+            
+            # Análise de Gelo
+            if ds['temp_media_c'] < 0 and fl_alvo != "SFC":
+                st.warning(f"❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
+            
+            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
+            st_folium(m_gfs, width="100%", height=600)
+        else:
+            st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
@@ -236,11 +240,3 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
-
-
-
-
-
-
-
-
