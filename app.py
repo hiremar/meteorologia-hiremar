@@ -201,37 +201,36 @@ if aba == "🛰️ Briefing em Tempo Real":
 elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     st.title("🚀 Análise de Previsão Numérica - GFS")
     
-    # Seletor de Nível de Voo
     fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
     pressao_hpa = NIVEIS_MAP[fl_alvo]
 
-    with st.spinner(f"Acessando NOMADS para processar o {fl_alvo}..."):
-        # Aqui chamamos a função nova com os dois retornos
+    with st.spinner(f"Acessando dados para o {fl_alvo}..."):
         ds, rodada_info = carregar_dados_gfs(fl_alvo)
         
         if ds:
             st.success(f"Dados carregados para o nível {fl_alvo} ({pressao_hpa} hPa)")
             st.info(f"📡 {rodada_info}")
             
-            # O xarray já vem filtrado, mas garantimos a seleção aqui
-            data_nivel = ds.sel(isobaricInhPa=pressao_hpa, method="nearest")
+            # REMOVEMOS a linha 'data_nivel = ds.sel(...)' que causava o erro
+            # Pois o ds já contém os dados processados da API
             
-            # Criando o mapa específico
+            # Criando o mapa
             m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
             
-            # Lógica de Alerta de Gelo (Professor Hiremar + AC 91-74B)
-            # Pegamos a temperatura (t) e umidade (r) do dataset
-            temp_media = float(data_nivel.t.mean()) - 273.15 # Kelvin para Celsius
+            # Lógica de Temperatura para Gelo
+            # Acessamos a média que calculamos no Mock lá na função
+            temp_media_c = ds.t_mean - 273.15 
             
             if fl_alvo in ["FL120", "FL140", "FL180", "FL220", "FL240"]:
-                st.warning(f"⚠️ Nível {fl_alvo}: Faixa de alta probabilidade de Gelo no Brasil.")
-                st.write(f"Temperatura média no nível: {temp_media:.1f}°C")
+                if temp_media_c < 0:
+                    st.warning(f"⚠️ Alerta de Gelo: Temperatura média de {temp_media_c:.1f}°C no {fl_alvo}.")
+                else:
+                    st.info(f"Temperatura no nível: {temp_media_c:.1f}°C")
 
             plugins.Fullscreen().add_to(m_gfs)
             st_folium(m_gfs, width="100%", height=600)
-            
         else:
-            st.error("Não foi possível processar o Grib2. Verifique o packages.txt no seu GitHub.")
+            st.error("Erro ao obter dados da API. Verifique a conexão.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
@@ -255,4 +254,6 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
+
 
