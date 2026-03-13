@@ -67,7 +67,6 @@ NIVEIS_MAP = {
     "FL360": 225, "FL410": 200
 }
 
-
 @st.cache_resource(ttl=3600)
 def carregar_dados_gfs(fl_alvo):
     try:
@@ -238,6 +237,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
