@@ -104,11 +104,8 @@ if aba == "🛰️ Briefing em Tempo Real":
     cartas_alta_sel = st.sidebar.multiselect("Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)])
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
-    
-    # Mapa Unificado
     m = gerar_mapa_base(cartas_baixa_sel, cartas_alta_sel, mostrar_sat=show_tsc)
 
-    # Camadas Meteorológicas REDEMET
     if show_tsc:
         folium.WmsTileLayer(url="https://redemet.decea.mil.br/geoserver/wms", layers="satelite:goes16_ch13_realce",
                             fmt="image/png", transparent=True, name="Nuvens / TSC", overlay=True, opacity=0.6).add_to(m)
@@ -122,7 +119,6 @@ if aba == "🛰️ Briefing em Tempo Real":
                     folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
         except: pass
 
-    # Marcadores e Rota
     COORDS = {"SBGR": [-23.432, -46.470], "SBGL": [-22.810, -43.250], "SBSP": [-23.626, -46.656],
               "SBRJ": [-22.910, -43.162], "SBRF": [-8.126, -34.923],  "SBKP": [-23.007, -47.134],
               "SBPA": [-29.994, -51.171], "SBCT": [-25.531, -49.175], "SBBR": [-15.869, -47.917], "SBBH": [-19.624, -43.898]}
@@ -144,7 +140,6 @@ if aba == "🛰️ Briefing em Tempo Real":
     folium.LayerControl(position='topright').add_to(m)
     st_folium(m, width="100%", height=600)
 
-    # Detalhamento METAR/TAF
     st.subheader("🔍 Dados Meteorológicos da Rota")
     cols = st.columns(3)
     for i, dado in enumerate(dados_missao):
@@ -159,8 +154,6 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     st.title("🚀 Análise de Previsão Numérica - GFS")
     st.info("Dados globais processados a cada 12h. Fonte: NOAA/NOMADS.")
 
-    # Seletor de Nível de Voo (Sincronizado com a Sidebar)
-    # Importante: Criamos os seletores de cartas aqui também para o mapa unificado funcionar
     st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
     cartas_baixa_sel = st.sidebar.multiselect("Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)], key="gfs_L")
     cartas_alta_sel = st.sidebar.multiselect("Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)], key="gfs_H")
@@ -175,16 +168,22 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
             st.success(f"Dados carregados para o nível {fl_alvo} ({pressao_hpa} hPa)")
             data_nivel = ds.sel(isobaricInhPa=pressao_hpa, method="nearest")
             
-            # Mapa do GFS com as Cartas ENRC unificadas
+            # Cálculo de temperatura e umidade para análise
+            temp_c = data_nivel.t.values - 273.15
+            umidade = data_nivel.r.values
+            
             m_gfs = gerar_mapa_base(cartas_baixa_sel, cartas_alta_sel)
-            
+
+            if umidade.max() > 70:
+                st.info(f"Probabilidade de nuvens/gelo detectada. UR máxima: {umidade.max():.1f}%")
+
             if fl_alvo in ["FL120", "FL140", "FL180", "FL220", "FL240"]:
-                st.warning(f"⚠️ Nível {fl_alvo}: Faixa de alta probabilidade de Gelo Severo no Brasil.")
-            
+                st.warning(f"⚠️ ATENÇÃO: Faixa crítica de gelo severo no Brasil.")
+
             plugins.Fullscreen().add_to(m_gfs)
             st_folium(m_gfs, width="100%", height=600)
         else:
-            st.error("Falha ao carregar dados. Verifique o motor ecCodes.")
+            st.error("Não foi possível baixar os dados do Grib2.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
@@ -208,6 +207,8 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
+
 
 
 
