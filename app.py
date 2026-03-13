@@ -71,34 +71,21 @@ NIVEIS_MAP = {
 @st.cache_resource(ttl=3600)
 def carregar_dados_gfs(fl_alvo):
     try:
-        # Mapeamento de pressão para altitude aproximada em metros (para a API)
-        # GFS via Open-Meteo usa níveis de pressão ou altitude.
         pressao = NIVEIS_MAP[fl_alvo]
-        
-        # Fazemos uma requisição simples para o centro do Brasil (ou área de interesse)
-        # A API retorna os dados do GFS já processados
-        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,relative_humidity_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
-        
+        # Pegamos os dados de um ponto central (Brasília) para referência de temperatura do nível
+        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa&forecast_days=1"
         response = requests.get(url).json()
         
-        # Criamos um "objeto" que imita o seu dataset anterior para não quebrar o resto do código
-        class MockDS:
-            def __init__(self, data, p):
-                self.t = np.array(data['hourly'][f'temperature_{p}hPa']) + 273.15 # Volta para Kelvin
-                self.r = np.array(data['hourly'][f'relative_humidity_{p}hPa'])
-                # Criamos um valor médio para o seu cálculo de gelo
-                self.t_mean = np.mean(self.t)
-            def sel(self, **kwargs): return self # Mock do método sel
-            @property
-            def t(self): return self._t # Mock para o seu data_nivel.t
+        # Calculamos a média das temperaturas previstas para as próximas 24h no nível escolhido
+        temps = response['hourly'][f'temperature_{pressao}hPa']
+        temp_media_c = sum(temps) / len(temps)
         
-        # Para o seu código atual de temperatura média:
-        ds_mock = type('obj', (object,), {
-            't': type('obj', (object,), {'mean': lambda: np.mean(response['hourly'][f'temperature_{pressao}hPa']) + 273.15})
-        })
-        
-        rodada_info = "Dados: GFS via Open-Meteo (Real-time)"
-        return ds_mock, rodada_info
+        # Criamos um dicionário simples com os resultados
+        dados_processados = {
+            'temp_media_c': temp_media_c,
+            'rodada': "GFS via Open-Meteo (Atualizado)"
+        }
+        return dados_processados, dados_processados['rodada']
     except Exception as e:
         return None, None
 
@@ -204,33 +191,30 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
     pressao_hpa = NIVEIS_MAP[fl_alvo]
 
-    with st.spinner(f"Acessando dados para o {fl_alvo}..."):
+    with st.spinner(f"Buscando dados do nível {fl_alvo}..."):
         ds, rodada_info = carregar_dados_gfs(fl_alvo)
         
         if ds:
-            st.success(f"Dados carregados para o nível {fl_alvo} ({pressao_hpa} hPa)")
+            st.success(f"Dados carregados para o nível {fl_alvo}")
             st.info(f"📡 {rodada_info}")
             
-            # REMOVEMOS a linha 'data_nivel = ds.sel(...)' que causava o erro
-            # Pois o ds já contém os dados processados da API
+            # AGORA LEMOS DO DICIONÁRIO:
+            temp_media_c = ds['temp_media_c']
             
-            # Criando o mapa
-            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
+            # Exibição da análise para o aluno
+            st.metric(label=f"Temperatura Média Estimada ({fl_alvo})", value=f"{temp_media_c:.1f} °C")
             
-            # Lógica de Temperatura para Gelo
-            # Acessamos a média que calculamos no Mock lá na função
-            temp_media_c = ds.t_mean - 273.15 
-            
-            if fl_alvo in ["FL120", "FL140", "FL180", "FL220", "FL240"]:
-                if temp_media_c < 0:
-                    st.warning(f"⚠️ Alerta de Gelo: Temperatura média de {temp_media_c:.1f}°C no {fl_alvo}.")
-                else:
-                    st.info(f"Temperatura no nível: {temp_media_c:.1f}°C")
+            if temp_media_c < 0:
+                st.warning(f"❄️ Atenção: Temperatura abaixo de 0°C. Risco de formação de gelo em nuvens (AC 91-74B).")
+            else:
+                st.success(f"✅ Temperatura acima de 0°C. Menor probabilidade de gelo estrutural.")
 
+            # Mapa
+            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
             plugins.Fullscreen().add_to(m_gfs)
             st_folium(m_gfs, width="100%", height=600)
         else:
-            st.error("Erro ao obter dados da API. Verifique a conexão.")
+            st.error("Não foi possível conectar à base de dados do GFS.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
@@ -254,6 +238,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
