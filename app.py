@@ -2,11 +2,17 @@ import streamlit as st
 import folium
 import requests
 import re
+import xarray as xr
+import numpy as np
+import pandas as pd
+from datetime import datetime
 from streamlit_folium import st_folium
 from folium import plugins
 from herbie import Herbie
-import xarray as xr
-import numpy as np
+
+# Estas duas são essenciais para ler o arquivo .grib2 do GFS
+import cfgrib
+import eccodes
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
@@ -224,3 +230,5 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
+
