@@ -67,7 +67,8 @@ NIVEIS_MAP = {
     "FL360": 225, "FL410": 200
 }
 
-@st.cache_data(ttl=3600)
+
+@st.cache_resource(ttl=3600)
 def carregar_dados_gfs(fl_alvo):
     try:
         # Mapeamento de pressão para altitude aproximada em metros (para a API)
@@ -254,3 +255,4 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
