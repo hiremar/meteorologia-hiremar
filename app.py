@@ -9,6 +9,9 @@ from datetime import datetime
 from streamlit_folium import st_folium
 from folium import plugins
 from herbie import Herbie
+import os
+# Garante que o Herbie tenha onde salvar os arquivos temporários no servidor
+os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
 
 # Estas duas são essenciais para ler o arquivo .grib2 do GFS
 import cfgrib
@@ -243,3 +246,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
+
+
+
