@@ -61,8 +61,8 @@ def get_sigmet_color(msg):
 
 # Tabela de níveis que você pediu
 NIVEIS_MAP = {
-    "SFC": 1013, "FL050": 850, "FL080": 750, "FL100": 700, 
-    "FL120": 650, "FL140": 600, "FL180": 500, "FL220": 450, 
+    "SFC": 1000, "FL050": 850, "FL080": 750, "FL100": 700, 
+    "FL120": 600, "FL140": 600, "FL180": 500, "FL220": 400, 
     "FL240": 400, "FL260": 350, "FL300": 300, "FL340": 250, 
     "FL360": 225, "FL410": 200
 }
@@ -238,6 +238,7 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
+
 
 
 
