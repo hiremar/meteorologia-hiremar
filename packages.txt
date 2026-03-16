@@ -1,2 +1,2 @@
 libeccodes-dev
-libeccodes0
+build-essential
