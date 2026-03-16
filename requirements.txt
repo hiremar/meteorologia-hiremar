@@ -4,3 +4,5 @@ streamlit-folium
 requests
 pandas
 numpy
+xarray
+netCDF4
