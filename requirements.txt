@@ -5,4 +5,7 @@ requests
 pandas
 numpy
 xarray
+herbie
+cfgrib
+eccodes
 netCDF4
