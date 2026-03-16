@@ -7,5 +7,5 @@ numpy
 xarray
 herbie
 cfgrib
-eccodes
+eccodes-python
 netCDF4
