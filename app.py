@@ -103,7 +103,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_tsc = st.sidebar.checkbox("Exibir Satélite Infravermelho GOES-19 (Nuvens IR)", value=True)
+    show_tsc = st.sidebar.checkbox("Exibir Satélite GOES-19 Infravermelho (NOAA/NESDIS)", value=True)
     show_redemet_sat = st.sidebar.checkbox("Exibir Satélite REDEMET (TSC)", value=False)
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
     
@@ -114,8 +114,17 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # 1. Inicialização do Mapa
-    m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
+    # 1. Inicialização do Mapa com FOCO NA AMÉRICA DO SUL
+    limites_america_do_sul = [[-56.0, -110.0], [15.0, -30.0]]
+    
+    m = folium.Map(
+        location=[-15.0, -58.0],
+        zoom_start=4,
+        min_zoom=3,
+        max_zoom=9,
+        max_bounds=True,
+        tiles=None
+    )
     
     # Camadas de Fundo
     folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
@@ -137,15 +146,16 @@ if aba == "🛰️ Briefing em Tempo Real":
             fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
         ).add_to(m)
 
-    # 3. CAMADA DE SATÉLITE EM TEMPO REAL (NOAA / RAINVIEWER GOES INFRARED OVERLAY)
+    # 3. CAMADA DE SATÉLITE REAL GOES-EAST (NESDIS/NOAA INFRARED BAND 13 - SOUTH AMERICA)
     if show_tsc:
-        # Camada do mosaico de nuvens infravermelho direto via servidor global RainViewer/NOAA com transparência
-        folium.TileLayer(
-            tiles="https://tilecache.rainviewer.com/v2/coverage/0/256/{z}/{x}/{y}/0/0_0.png",
-            attr="NOAA / RainViewer Satellite",
-            name="Satélite Nuvens IR (GOES-19)",
+        folium.WmsTileLayer(
+            url="https://nowcoast.noaa.gov/geoserver/satellite/goes_east_band13/wms",
+            layers="goes_east_band13",
+            fmt="image/png",
+            transparent=True,
+            name="Satélite GOES-19 IR (NOAA nesdis)",
             overlay=True,
-            opacity=0.75
+            opacity=0.65
         ).add_to(m)
 
     if show_redemet_sat:
@@ -222,7 +232,7 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
             if ds['temp_media_c'] < 0 and fl_alvo != "SFC":
                 st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
             
-            m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
+            m_gfs = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles='CartoDB dark_matter')
             st_folium(m_gfs, width="100%", height=600)
         else:
             st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
