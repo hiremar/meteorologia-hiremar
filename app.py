@@ -2,12 +2,17 @@ import base64
 import io
 import os
 import re
+from datetime import datetime, timezone
+
 import folium
 from folium import plugins
+import numpy as np
 from PIL import Image
 import requests
+import s3fs
 import streamlit as st
 from streamlit_folium import st_folium
+import xarray as xr
 
 # Garante pasta do Herbie se necessário
 os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
@@ -43,56 +48,78 @@ if not api_key:
     st.stop()
 
 
-# --- PROCESSAMENTO GOES-19 (NUVENS DESACOPLADAS & TRANSPARENTES) ---
-@st.cache_data(ttl=900)
+# --- PROCESSAMENTO GOES-19 NETCDF (NOAA S3 REAL-TIME) ---
+@st.cache_data(ttl=600)  # Atualização automática a cada 10 minutos (escaneamento Full Disk)
 def carregar_goes19_overlay():
-    """Baixa o fluxo em tempo real do GOES-19, remove o fundo preto (continente/oceano)
+    """Conecta ao bucket S3 da NOAA, lê o arquivo NetCDF mais recente do GOES-19 (Canal 13 - IR),
 
-    e entrega uma camada PNG desacoplada para o Folium.
+    extrai a matriz física de temperaturas (°C), aplica transparência no solo limpo e
+
+    retorna a imagem PNG base64 pronta para sobrepor no mapa.
     """
     try:
-        # Bounding box América do Sul (Lat Min, Lon Min, Lat Max, Lon Max)
-        bounds = [[-55.0, -90.0], [15.0, -35.0]]
+        fs = s3fs.S3FileSystem(anon=True)
+        now_utc = datetime.now(timezone.utc)
+        year = now_utc.strftime("%Y")
+        day_of_year = now_utc.strftime("%j")
+        hour = now_utc.strftime("%H")
 
-        url_img = "https://cdn.star.nesdis.noaa.gov/GOES19/ABI/FD/GEOCOLOR/latest.jpg"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
-        }
+        s3_path = f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour}/"
+        files = [f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")]
 
-        res = requests.get(url_img, headers=headers, timeout=15)
-        if res.status_code == 200 and len(res.content) > 10000:
-            img = Image.open(io.BytesIO(res.content)).convert("RGBA")
-
-            # Recorte da região da América do Sul no Full Disk
-            w, h = img.size
-            crop_box = (
-                int(w * 0.35),
-                int(h * 0.45),
-                int(w * 0.75),
-                int(h * 0.90),
+        # Fallback para a hora anterior caso esteja no início de uma nova hora
+        if not files:
+            hour_prev = f"{(int(hour) - 1) % 24:02d}"
+            s3_path = (
+                f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour_prev}/"
             )
-            img_sul = img.crop(crop_box)
+            files = [
+                f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")
+            ]
 
-            # Algoritmo de Transparência Pixel por Pixel
-            pixdata = img_sul.load()
-            sw, sh = img_sul.size
-            for y in range(sh):
-                for x in range(sw):
-                    r, g, b, a = pixdata[x, y]
-                    # Se o pixel for muito escuro (oceano/terra sem nuvem) -> Transparente (Alfa = 0)
-                    if r < 35 and g < 35 and b < 35:
-                        pixdata[x, y] = (0, 0, 0, 0)
-                    else:
-                        pixdata[x, y] = (r, g, b, 215)
+        if not files:
+            return None, None
 
-            buffered = io.BytesIO()
-            img_sul.save(buffered, format="PNG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode()
-            return f"data:image/png;base64,{img_b64}", bounds
+        latest_nc = sorted(files)[-1]
+
+        # 1. Leitura direta do NetCDF em memória
+        with fs.open(latest_nc, "rb") as f:
+            ds = xr.open_dataset(f, engine="h5netcdf")
+            celsius = ds["CMI"].values - 273.15  # Converte Kelvin para Celsius
+
+        # 2. Recorte aproximado da América do Sul na matriz geostacionária 5424x5424
+        celsius_sul = celsius[1800:4800, 1800:4500]
+
+        # 3. Mapeamento de Cores e Transparência
+        # Normalização dos valores térmicos (-80°C a +20°C) para a escala de cinza 0-255
+        img_norm = np.clip(
+            (celsius_sul - (-80)) / (20 - (-80)) * 255, 0, 255
+        ).astype(np.uint8)
+
+        # Montagem do array RGBA
+        rgba = np.zeros(
+            (img_norm.shape[0], img_norm.shape[1], 4), dtype=np.uint8
+        )
+        rgba[:, :, 0] = img_norm  # Red
+        rgba[:, :, 1] = img_norm  # Green
+        rgba[:, :, 2] = img_norm  # Blue
+
+        # Transparência: Solo/Mar limpo (> 10°C) vira Alfa=0 (100% Transparente). Nuvens viram Alfa=210
+        rgba[:, :, 3] = np.where(celsius_sul < 10.0, 210, 0)
+
+        img_pil = Image.fromarray(rgba, "RGBA")
+
+        # 4. Exportação Base64 para o Folium
+        buffered = io.BytesIO()
+        img_pil.save(buffered, format="PNG")
+        img_b64 = base64.b64encode(buffered.getvalue()).decode()
+
+        bounds = [[-55.0, -90.0], [15.0, -35.0]]
+        return f"data:image/png;base64,{img_b64}", bounds
+
     except Exception as e:
-        print(f"Erro no processamento do GOES-19: {e}")
-
-    return None, None
+        st.sidebar.error(f"Erro ao processar NetCDF do GOES-19: {e}")
+        return None, None
 
 
 # --- FUNÇÕES DE APOIO ---
@@ -194,7 +221,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.sidebar.subheader("📡 Camadas Ativas")
     show_goes_ir = st.sidebar.checkbox(
-        "Exibir Satélite GOES-19 (Nuvens Desacopladas)", value=True
+        "Exibir Satélite GOES-19 (NetCDF NOAA)", value=True
     )
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
@@ -246,17 +273,18 @@ if aba == "🛰️ Briefing em Tempo Real":
             show=True,
         ).add_to(m)
 
-    # 3. CAMADA OVERLAY GOES-19 (NUVENS DESACOPLADAS TRANSPARENTES)
+    # 3. CAMADA OVERLAY GOES-19 (NETCDF4 REAL-TIME S3)
     if show_goes_ir:
-        img_url, img_bounds = carregar_goes19_overlay()
-        if img_url and img_bounds:
-            folium.raster_layers.ImageOverlay(
-                image=img_url,
-                bounds=img_bounds,
-                opacity=0.75,
-                name="GOES-19 Nuvens (NOAA Real-time)",
-                interactive=False,
-            ).add_to(m)
+        with st.spinner("Conectando ao S3 da NOAA e extraindo NetCDF do GOES-19..."):
+            img_url, img_bounds = carregar_goes19_overlay()
+            if img_url and img_bounds:
+                folium.raster_layers.ImageOverlay(
+                    image=img_url,
+                    bounds=img_bounds,
+                    opacity=0.75,
+                    name="GOES-19 Nuvens (NetCDF NOAA)",
+                    interactive=False,
+                ).add_to(m)
 
     # 4. SIGMETs
     if show_sigmet:
