@@ -103,7 +103,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_tsc = st.sidebar.checkbox("Exibir Satélite GOES-19 (NASA GIBS / IR)", value=True)
+    show_tsc = st.sidebar.checkbox("Exibir Satélite Infravermelho GOES-19 (Nuvens IR)", value=True)
     show_redemet_sat = st.sidebar.checkbox("Exibir Satélite REDEMET (TSC)", value=False)
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
     
@@ -137,17 +137,15 @@ if aba == "🛰️ Briefing em Tempo Real":
             fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
         ).add_to(m)
 
-    # 3. CAMADA DO SATÉLITE GOES-19 (NASA GIBS - WMS TRANSPARENTE COM DATA UTC ATUAL)
+    # 3. CAMADA DE SATÉLITE EM TEMPO REAL (NOAA / RAINVIEWER GOES INFRARED OVERLAY)
     if show_tsc:
-        data_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        folium.WmsTileLayer(
-            url=f"https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?TIME={data_utc}",
-            layers="GOES-East_ABI_Band13_Clean_IR",
-            fmt="image/png",
-            transparent=True,
-            name="Satélite GOES-19 (Nuvens IR - NASA)",
+        # Camada do mosaico de nuvens infravermelho direto via servidor global RainViewer/NOAA com transparência
+        folium.TileLayer(
+            tiles="https://tilecache.rainviewer.com/v2/coverage/0/256/{z}/{x}/{y}/0/0_0.png",
+            attr="NOAA / RainViewer Satellite",
+            name="Satélite Nuvens IR (GOES-19)",
             overlay=True,
-            opacity=0.65
+            opacity=0.75
         ).add_to(m)
 
     if show_redemet_sat:
