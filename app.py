@@ -1,14 +1,14 @@
-import base64
-from datetime import datetime, timezone
-import io
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import folium
 from folium import plugins
-from PIL import Image
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
+
+# Garante diretório temporário para Herbie/GRIB se necessário
+os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
@@ -41,55 +41,6 @@ if not api_key:
     st.stop()
 
 
-# --- PROCESSAMENTO DO GOES-19 (NUVENS DESACOPLADAS & TRANSPARENTES) ---
-@st.cache_data(ttl=600)
-def obter_goes19_overlay():
-    """Baixa o canal 13 do GOES-19, reprojeta a latitude/longitude para a América do Sul
-    e limpa o fundo escuro (Alpha Masking) para deixar APENAS as nuvens visíveis."""
-    try:
-        # Caixas de Coordenadas Exatas da América do Sul (Lat Min, Lon Min, Lat Max, Lon Max)
-        bounds = [[-55.0, -90.0], [15.0, -35.0]]
-
-        # Endpoint reprojetado em EPSG:4326 direto do GOES-East (GOES-19) - Canal 13 (IR)
-        url_wms = (
-            "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi?"
-            "SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=goes_east_ch13"
-            "&STYLES=&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:4326"
-            "&BBOX=-90.0,-55.0,-35.0,15.0&WIDTH=1400&HEIGHT=1200"
-        )
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlitApp/1.0"
-        }
-        res = requests.get(url_wms, headers=headers, timeout=12)
-
-        if res.status_code == 200 and len(res.content) > 1000:
-            img = Image.open(io.BytesIO(res.content)).convert("RGBA")
-
-            # Tratamento de Transparência Pixel a Pixel (Mascara fundo limpo)
-            data = img.getdata()
-            new_data = []
-            for item in data:
-                # Se o pixel for muito escuro (fundo do mar/continente sem nuvem) -> Fica Transparente
-                if item[0] < 22 and item[1] < 22 and item[2] < 22:
-                    new_data.append((0, 0, 0, 0))
-                else:
-                    # Nuvens mantêm transparência suave (Opacidade ~85%)
-                    new_data.append((item[0], item[1], item[2], 215))
-
-            img.putdata(new_data)
-
-            # Empacota em PNG Base64 de altíssima velocidade
-            buffered = io.BytesIO()
-            img.save(buffered, format="PNG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode()
-            return f"data:image/png;base64,{img_b64}", bounds
-    except Exception as e:
-        print(f"Erro ao carregar GOES-19: {e}")
-
-    return None, None
-
-
 # --- FUNÇÕES DE APOIO ---
 def sigmet_to_decimal(texto):
     padrao = r"([NS])(\d{2})(\d{2})\s([WE])(\d{3})(\d{2})"
@@ -118,6 +69,7 @@ def get_sigmet_color(msg):
     return "orange"
 
 
+# --- FUNÇÕES PARA O MODELO GFS ---
 NIVEIS_MAP = {
     "SFC": 1000,
     "FL050": 850,
@@ -150,7 +102,7 @@ def carregar_dados_gfs(fl_alvo):
             "temp_media_c": response["hourly"][f"temperature_{pressao}hPa"][0],
             "wind_spd": response["hourly"][f"windspeed_{pressao}hPa"][0],
             "wind_dir": response["hourly"][f"winddirection_{pressao}hPa"][0],
-            "rodada": "GFS Real-time",
+            "rodada": "GFS via Open-Meteo (Real-time)",
         }
         return dados_processados, dados_processados["rodada"]
     except Exception as e:
@@ -188,12 +140,16 @@ if aba == "🛰️ Briefing em Tempo Real":
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_tsc = st.sidebar.checkbox(
-        "Exibir Satélite GOES-19 (Nuvens Desacopladas)", value=True
+    show_goes_ir = st.sidebar.checkbox(
+        "Exibir Satélite GOES-19 (Infravermelho / Nuvens)", value=True
+    )
+    show_redemet_sat = st.sidebar.checkbox(
+        "Exibir Satélite REDEMET (TSC)", value=False
     )
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
     st.sidebar.markdown("---")
+    st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
     cartas_baixa_sel = st.sidebar.multiselect(
         "Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)]
     )
@@ -203,24 +159,18 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # 1. Mapa Base Folium
-    m = folium.Map(
-        location=[-15.0, -58.0],
-        zoom_start=4,
-        min_zoom=3,
-        max_zoom=9,
-        max_bounds=True,
-        tiles=None,
-    )
+    # 1. Inicialização do Mapa
+    m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
 
-    folium.TileLayer(
-        "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
-    ).add_to(m)
+    # Camadas de Fundo Cartográfico
     folium.TileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri Satellite",
         name="Satélite (Google Earth)",
         overlay=False,
+    ).add_to(m)
+    folium.TileLayer(
+        "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
     ).add_to(m)
 
     # 2. Cartas ENRC Selecionadas
@@ -232,6 +182,7 @@ if aba == "🛰️ Briefing em Tempo Real":
             transparent=True,
             name=f"Carta {carta}",
             overlay=True,
+            show=True,
         ).add_to(m)
 
     for carta in cartas_alta_sel:
@@ -242,20 +193,34 @@ if aba == "🛰️ Briefing em Tempo Real":
             transparent=True,
             name=f"Carta {carta}",
             overlay=True,
+            show=True,
         ).add_to(m)
 
-    # 3. CAMADA GOES-19 (OVERLAY TRANSPARENTE DESACOPLADO)
-    if show_tsc:
-        with st.spinner("Carregando Nuvens do GOES-19..."):
-            img_url, bounds = obter_goes19_overlay()
-            if img_url and bounds:
-                folium.raster_layers.ImageOverlay(
-                    image=img_url,
-                    bounds=bounds,
-                    opacity=0.85,
-                    name="GOES-19 (Nuvens Infravermelho)",
-                    interactive=False,
-                ).add_to(m)
+    # 3. CAMADA DINÂMICA DO GOES-19 (NASA GIBS - TEMPO REAL & TRANSPARENTE)
+    if show_goes_ir:
+        # Pega a data UTC mais recente para alimentar o servidor de tiles da NASA
+        data_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        folium.WmsTileLayer(
+            url=f"https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?TIME={data_utc}",
+            layers="GOES-East_ABI_Band13_Clean_IR",
+            fmt="image/png",
+            transparent=True,
+            name="GOES-19 (Infravermelho Termal - NASA)",
+            overlay=True,
+            opacity=0.65,
+        ).add_to(m)
+
+    if show_redemet_sat:
+        folium.WmsTileLayer(
+            url="https://redemet.decea.mil.br/geoserver/wms",
+            layers="satelite:goes16_ch13_realce",
+            fmt="image/png",
+            transparent=True,
+            name="Nuvens / TSC REDEMET",
+            overlay=True,
+            opacity=0.6,
+        ).add_to(m)
 
     # 4. SIGMETs
     if show_sigmet:
@@ -316,6 +281,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         [COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5
     ).add_to(m)
 
+    # Controles
     plugins.Fullscreen().add_to(m)
     folium.LayerControl(position="topright").add_to(m)
 
@@ -351,17 +317,19 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
                 st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
 
             m_gfs = folium.Map(
-                location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter"
+                location=[-15.0, -48.0], zoom_start=4, tiles="CartoDB dark_matter"
             )
             st_folium(m_gfs, width="100%", height=600)
+        else:
+            st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("🎥 Aula 1: Altimetria")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("🎥 Aula 1: Altimetria - Ajuste: QNH / QNE")
         st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg")
-    with c2:
+    with col2:
         st.subheader("🎥 Aula 2: Satélite, SIGMET e GELO")
         st.video("https://www.youtube.com/watch?v=KoyZS3iCeM0")
 
@@ -370,8 +338,12 @@ elif aba == "📚 Materiais e Links":
     st.markdown(
         """
     ### 📖 Manuais Oficiais
-    - [ICA 105-15/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
-    - [ICA 105-16/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
-    - [ICA 105-17/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
+    - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
+    - [ICA 105-16/2025 (Códigos Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
+    - [ICA 105-17/2025 (Manual de Centros Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
+    ### 🔗 Links Úteis
+    - [REDEMET](https://redemet.decea.mil.br/)
+    - [AISWEB](https://aisweb.decea.mil.br/)
+    - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """
     )
