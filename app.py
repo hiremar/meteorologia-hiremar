@@ -41,35 +41,52 @@ if not api_key:
     st.stop()
 
 
-# --- FUNÇÃO GOES-19 DESACOPLADO E TRANSPARENTE ---
-@st.cache_data(ttl=900)
-def carregar_goes19_nuvens():
+# --- PROCESSAMENTO DO GOES-19 (NUVENS DESACOPLADAS & TRANSPARENTES) ---
+@st.cache_data(ttl=600)
+def obter_goes19_overlay():
+    """Baixa o canal 13 do GOES-19, reprojeta a latitude/longitude para a América do Sul
+    e limpa o fundo escuro (Alpha Masking) para deixar APENAS as nuvens visíveis."""
     try:
-        # Bounding Box América do Sul: [lat_min, lon_min, lat_max, lon_max]
-        bounds = [[-55.0, -90.0], [15.0, -30.0]]
+        # Caixas de Coordenadas Exatas da América do Sul (Lat Min, Lon Min, Lat Max, Lon Max)
+        bounds = [[-55.0, -90.0], [15.0, -35.0]]
 
-        # Busca o canal 13 do GOES-East (GOES-19)
-        url_img = "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi?VER=1.1.1&SERVICE=WMS&REQUEST=GetMap&LAYERS=goes_east_ch13&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:4326&BBOX=-90.0,-55.0,-30.0,15.0&WIDTH=1200&HEIGHT=1000"
+        # Endpoint reprojetado em EPSG:4326 direto do GOES-East (GOES-19) - Canal 13 (IR)
+        url_wms = (
+            "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi?"
+            "SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=goes_east_ch13"
+            "&STYLES=&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:4326"
+            "&BBOX=-90.0,-55.0,-35.0,15.0&WIDTH=1400&HEIGHT=1200"
+        )
 
-        resp = requests.get(url_img, timeout=10)
-        if resp.status_code == 200:
-            img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlitApp/1.0"
+        }
+        res = requests.get(url_wms, headers=headers, timeout=12)
 
-            # Torna fundo preto em 100% transparente
-            pixdata = img.load()
-            width, height = img.size
-            for y in range(height):
-                for x in range(width):
-                    r, g, b, a = pixdata[x, y]
-                    if r < 20 and g < 20 and b < 20:
-                        pixdata[x, y] = (0, 0, 0, 0)
+        if res.status_code == 200 and len(res.content) > 1000:
+            img = Image.open(io.BytesIO(res.content)).convert("RGBA")
 
-            buffer = io.BytesIO()
-            img.save(buffer, format="PNG")
-            buffer.seek(0)
-            return buffer, bounds
-    except Exception:
-        pass
+            # Tratamento de Transparência Pixel a Pixel (Mascara fundo limpo)
+            data = img.getdata()
+            new_data = []
+            for item in data:
+                # Se o pixel for muito escuro (fundo do mar/continente sem nuvem) -> Fica Transparente
+                if item[0] < 22 and item[1] < 22 and item[2] < 22:
+                    new_data.append((0, 0, 0, 0))
+                else:
+                    # Nuvens mantêm transparência suave (Opacidade ~85%)
+                    new_data.append((item[0], item[1], item[2], 215))
+
+            img.putdata(new_data)
+
+            # Empacota em PNG Base64 de altíssima velocidade
+            buffered = io.BytesIO()
+            img.save(buffered, format="PNG")
+            img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            return f"data:image/png;base64,{img_b64}", bounds
+    except Exception as e:
+        print(f"Erro ao carregar GOES-19: {e}")
+
     return None, None
 
 
@@ -186,6 +203,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
+    # 1. Mapa Base Folium
     m = folium.Map(
         location=[-15.0, -58.0],
         zoom_start=4,
@@ -205,7 +223,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         overlay=False,
     ).add_to(m)
 
-    # Cartas ENRC
+    # 2. Cartas ENRC Selecionadas
     for carta in cartas_baixa_sel:
         folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
@@ -226,22 +244,20 @@ if aba == "🛰️ Briefing em Tempo Real":
             overlay=True,
         ).add_to(m)
 
-    # CAMADA GOES-19
+    # 3. CAMADA GOES-19 (OVERLAY TRANSPARENTE DESACOPLADO)
     if show_tsc:
-        img_buf, img_bounds = carregar_goes19_nuvens()
-        if img_buf and img_bounds:
-            encoded_img = base64.b64encode(img_buf.getvalue()).decode()
-            png_url = f"data:image/png;base64,{encoded_img}"
+        with st.spinner("Carregando Nuvens do GOES-19..."):
+            img_url, bounds = obter_goes19_overlay()
+            if img_url and bounds:
+                folium.raster_layers.ImageOverlay(
+                    image=img_url,
+                    bounds=bounds,
+                    opacity=0.85,
+                    name="GOES-19 (Nuvens Infravermelho)",
+                    interactive=False,
+                ).add_to(m)
 
-            folium.raster_layers.ImageOverlay(
-                image=png_url,
-                bounds=img_bounds,
-                opacity=0.75,
-                name="GOES-19 Nuvens",
-                interactive=False,
-            ).add_to(m)
-
-    # SIGMETs
+    # 4. SIGMETs
     if show_sigmet:
         try:
             s_res = requests.get(
@@ -260,7 +276,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         except Exception:
             pass
 
-    # Aeródromos e Rota
+    # 5. Marcadores e Rota
     COORDS = {
         "SBGR": [-23.432, -46.470],
         "SBGL": [-22.810, -43.250],
@@ -305,7 +321,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st_folium(m, width="100%", height=600)
 
-    # METAR e TAF
+    # Detalhamento METAR/TAF
     st.subheader("🔍 Dados Meteorológicos da Rota")
     cols = st.columns(3)
     for i, dado in enumerate(dados_missao):
