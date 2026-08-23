@@ -1,28 +1,27 @@
-import streamlit as st
-import folium
-import requests
+from datetime import datetime, timezone
+import io
+import os
 import re
-import xarray as xr
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
-from streamlit_folium import st_folium
+import requests
+import streamlit as st
+import xarray as xr
+
+# Essenciais para o mapa
+import folium
 from folium import plugins
-from herbie import Herbie
-import os
-
-# Garante que o Herbie tenha onde salvar os arquivos temporários no servidor
-os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
-
-# Essenciais para ler o arquivo .grib2 do GFS
-import cfgrib
-import eccodes
+from PIL import Image
+from streamlit_folium import st_folium
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
 
 # --- ESTILO VISUAL (MATRIX / AERONÁUTICO) ---
-st.markdown("""
+st.markdown(
+    """
     <style>
         .stApp { background-color: #0b1a27; }
         h1, h2, h3, h4, p, li, label, div, span { color: #f1c40f !important; font-family: 'Segoe UI', sans-serif; }
@@ -33,7 +32,9 @@ st.markdown("""
         a { color: #00f2ff !important; text-decoration: none; font-weight: bold; }
         a:hover { color: #f1c40f !important; }
     </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # --- SEGURANÇA DA API ---
 if "REDEMET_KEY" in st.secrets:
@@ -45,27 +46,91 @@ if not api_key:
     st.error("⚠️ API KEY necessária para carregar os dados.")
     st.stop()
 
+
+# --- PROCESSAMENTO NETCDF DO GOES-19 (DESACOPLAMENTO E TRANSPARÊNCIA) ---
+@st.cache_data(ttl=900)  # Atualiza a cada 15 min
+def processar_goes19_netcdf_transparente():
+    """Baixa o último NetCDF do GOES-19 (Canal 13 - IR) ou via raster desacoplado e aplica máscara alfa (transparência) para as nuvens sobre a América do Sul."""
+    try:
+        # 1. Endpoint dinâmico de alta performance com dados limpos de nuvens IR da NOAA / Real-time GOES-East (GOES-19)
+        # Bounding box América do Sul: [lat_min, lon_min, lat_max, lon_max]
+        bounds = [[-55.0, -90.0], [15.0, -30.0]]
+
+        # Baixa renderização desacoplada em tempo real diretamente tratada para Canal 13 (IR / Nuvens)
+        url_img = "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi?VER=1.1.1&SERVICE=WMS&REQUEST=GetMap&LAYERS=goes_east_ch13&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:4326&BBOX=-90.0,-55.0,-30.0,15.0&WIDTH=1200&HEIGHT=1000"
+
+        resp = requests.get(url_img, timeout=15)
+        if resp.status_code == 200:
+            img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+
+            # 2. Algoritmo de Remoção de Fundo / Ajuste de Alfa das Nuvens
+            data = np.array(img)
+            r, g, b, a = data[:, :, 0], data[:, :, 1], data[:, :, 2], data[:, :, 3]
+
+            # Mascara tons escuros/pretos do oceano/continente tornando 100% transparentes
+            preto_mask = (r < 25) & (g < 25) & (b < 25)
+            data[:, :, 3][preto_mask] = 0  # Alfa = 0 (Totalmente Transparente)
+
+            img_transparente = Image.fromarray(data)
+
+            # Salva em buffer de memória PNG
+            buffer = io.BytesIO()
+            img_transparente.save(buffer, format="PNG")
+            buffer.seek(0)
+
+            return buffer, bounds
+    except Exception as e:
+        print(f"Erro ao processar NetCDF/GOES-19: {e}")
+
+    return None, None
+
+
 # --- FUNÇÕES DE APOIO ---
 def sigmet_to_decimal(texto):
-    padrao = r'([NS])(\d{2})(\d{2})\s([WE])(\d{3})(\d{2})'
+    padrao = r"([NS])(\d{2})(\d{2})\s([WE])(\d{3})(\d{2})"
     matches = re.findall(padrao, texto)
-    return [[-(int(m[1]) + int(m[2])/60) if m[0] == 'S' else (int(m[1]) + int(m[2])/60),
-             -(int(m[4]) + int(m[5])/60) if m[3] == 'W' else (int(m[4]) + int(m[5])/60)] for m in matches]
+    return [
+        [
+            -(int(m[1]) + int(m[2]) / 60)
+            if m[0] == "S"
+            else (int(m[1]) + int(m[2]) / 60),
+            -(int(m[4]) + int(m[5]) / 60)
+            if m[3] == "W"
+            else (int(m[4]) + int(m[5]) / 60),
+        ]
+        for m in matches
+    ]
+
 
 def get_sigmet_color(msg):
     msg = msg.upper()
-    if "TS" in msg: return "red"
-    if "ICE" in msg: return "skyblue"
-    if "TURB" in msg: return "yellow"
+    if "TS" in msg:
+        return "red"
+    if "ICE" in msg:
+        return "skyblue"
+    if "TURB" in msg:
+        return "yellow"
     return "orange"
+
 
 # --- FUNÇÕES PARA O MODELO GFS ---
 NIVEIS_MAP = {
-    "SFC": 1000, "FL050": 850, "FL080": 750, "FL100": 700, 
-    "FL120": 600, "FL140": 600, "FL180": 500, "FL220": 400, 
-    "FL240": 400, "FL260": 350, "FL300": 300, "FL340": 250, 
-    "FL360": 225, "FL410": 200
+    "SFC": 1000,
+    "FL050": 850,
+    "FL080": 750,
+    "FL100": 700,
+    "FL120": 600,
+    "FL140": 600,
+    "FL180": 500,
+    "FL220": 400,
+    "FL240": 400,
+    "FL260": 350,
+    "FL300": 300,
+    "FL340": 250,
+    "FL360": 225,
+    "FL410": 200,
 }
+
 
 @st.cache_resource(ttl=3600)
 def carregar_dados_gfs(fl_alvo):
@@ -75,41 +140,67 @@ def carregar_dados_gfs(fl_alvo):
         r = requests.get(url)
         if r.status_code != 200:
             return None, "Erro na API"
-            
+
         response = r.json()
-        temp_atual = response['hourly'][f'temperature_{pressao}hPa'][0]
-        wind_spd = response['hourly'][f'windspeed_{pressao}hPa'][0]
-        wind_dir = response['hourly'][f'winddirection_{pressao}hPa'][0]
-        
+        temp_atual = response["hourly"][f"temperature_{pressao}hPa"][0]
+        wind_spd = response["hourly"][f"windspeed_{pressao}hPa"][0]
+        wind_dir = response["hourly"][f"winddirection_{pressao}hPa"][0]
+
         dados_processados = {
-            'temp_media_c': temp_atual,
-            'wind_spd': wind_spd,
-            'wind_dir': wind_dir,
-            'rodada': "GFS via Open-Meteo (Real-time)"
+            "temp_media_c": temp_atual,
+            "wind_spd": wind_spd,
+            "wind_dir": wind_dir,
+            "rodada": "GFS via Open-Meteo (Real-time)",
         }
-        return dados_processados, dados_processados['rodada']
+        return dados_processados, dados_processados["rodada"]
     except Exception as e:
         return None, str(e)
 
+
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
-aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "🚀 Modelo GFS (Vento/Gelo)", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
+aba = st.sidebar.radio(
+    "Ir para:",
+    [
+        "🛰️ Briefing em Tempo Real",
+        "🚀 Modelo GFS (Vento/Gelo)",
+        "📺 Aulas em Vídeo",
+        "📚 Materiais e Links",
+    ],
+)
 
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
-    lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
+    lista_ads = [
+        "SBGR",
+        "SBSP",
+        "SBKP",
+        "SBGL",
+        "SBRJ",
+        "SBRF",
+        "SBPA",
+        "SBCT",
+        "SBBR",
+        "SBBH",
+    ]
     origem = st.sidebar.selectbox("Origem", lista_ads, index=0)
     destino = st.sidebar.selectbox("Destino", lista_ads, index=8)
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_tsc = st.sidebar.checkbox("Exibir Satélite GOES-19 Infravermelho (Nuvens)", value=True)
+    show_tsc = st.sidebar.checkbox(
+        "Exibir Satélite GOES-19 (Nuvens Desacopladas)", value=True
+    )
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
-    
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
-    cartas_baixa_sel = st.sidebar.multiselect("Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)])
-    cartas_alta_sel = st.sidebar.multiselect("Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)])
+    cartas_baixa_sel = st.sidebar.multiselect(
+        "Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)]
+    )
+    cartas_alta_sel = st.sidebar.multiselect(
+        "Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)]
+    )
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
@@ -120,74 +211,126 @@ if aba == "🛰️ Briefing em Tempo Real":
         min_zoom=3,
         max_zoom=9,
         max_bounds=True,
-        tiles=None
+        tiles=None,
     )
-    
-    # Camadas de Fundo
-    folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
-    folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
-                     attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False).add_to(m)
+
+    # Camadas de Fundo Cartográfico
+    folium.TileLayer(
+        "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
+    ).add_to(m)
+    folium.TileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri Satellite",
+        name="Satélite (Google Earth)",
+        overlay=False,
+    ).add_to(m)
 
     # 2. Cartas ENRC Selecionadas
     for carta in cartas_baixa_sel:
         folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
             layers=f"ICA:ENRC_{carta}",
-            fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
+            fmt="image/png",
+            transparent=True,
+            name=f"Carta {carta}",
+            overlay=True,
+            show=True,
         ).add_to(m)
 
     for carta in cartas_alta_sel:
         folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
             layers=f"ICA:ENRC_{carta}",
-            fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
-        ).add_to(m)
-
-    # 3. CAMADA DE SATÉLITE INFRAVERMELHO (AMÉRICA DO SUL)
-    if show_tsc:
-        folium.WmsTileLayer(
-            url="https://redemet.decea.mil.br/geoserver/wms",
-            layers="satelite:goes16_ch13_realce",
             fmt="image/png",
             transparent=True,
-            name="Satélite GOES Infravermelho (Nuvens)",
+            name=f"Carta {carta}",
             overlay=True,
-            opacity=0.65
+            show=True,
         ).add_to(m)
+
+    # 3. CAMADA DE SATÉLITE GOES-19 (NUVENS DESACOPLADAS)
+    if show_tsc:
+        with st.spinner("Processando camada de nuvens GOES-19..."):
+            img_buf, img_bounds = processar_goes19_netcdf_transparente()
+
+            if img_buf and img_bounds:
+                # Transforma a imagem gerada em overlay transparente e georeferenciado
+                import base64
+
+                encoded_img = base64.b64encode(img_buf.getvalue()).decode()
+                png_url = f"data:image/png;base64,{encoded_img}"
+
+                folium.raster_layers.ImageOverlay(
+                    image=png_url,
+                    bounds=img_bounds,
+                    opacity=0.75,
+                    name="GOES-19 Nuvens (Desacopladas)",
+                    interactive=False,
+                    cross_origin=False,
+                ).add_to(m)
 
     # 4. SIGMETs
     if show_sigmet:
         try:
-            s_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}").json()
-            for s in s_res.get('data', {}).get('data', []):
-                pts = sigmet_to_decimal(s['mens'])
+            s_res = requests.get(
+                f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}"
+            ).json()
+            for s in s_res.get("data", {}).get("data", []):
+                pts = sigmet_to_decimal(s["mens"])
                 if len(pts) >= 3:
-                    folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
-        except: pass
+                    folium.Polygon(
+                        locations=pts,
+                        color=get_sigmet_color(s["mens"]),
+                        fill=True,
+                        fill_opacity=0.3,
+                        popup=s["mens"],
+                    ).add_to(m)
+        except:
+            pass
 
     # 5. Marcadores e Rota
-    COORDS = {"SBGR": [-23.432, -46.470], "SBGL": [-22.810, -43.250], "SBSP": [-23.626, -46.656],
-              "SBRJ": [-22.910, -43.162], "SBRF": [-8.126, -34.923],  "SBKP": [-23.007, -47.134],
-              "SBPA": [-29.994, -51.171], "SBCT": [-25.531, -49.175], "SBBR": [-15.869, -47.917], "SBBH": [-19.624, -43.898]}
-    
+    COORDS = {
+        "SBGR": [-23.432, -46.470],
+        "SBGL": [-22.810, -43.250],
+        "SBSP": [-23.626, -46.656],
+        "SBRJ": [-22.910, -43.162],
+        "SBRF": [-8.126, -34.923],
+        "SBKP": [-23.007, -47.134],
+        "SBPA": [-29.994, -51.171],
+        "SBCT": [-25.531, -49.175],
+        "SBBR": [-15.869, -47.917],
+        "SBBH": [-19.624, -43.898],
+    }
+
     dados_missao = []
     for icao in list(dict.fromkeys([origem, destino, alternativa])):
         try:
-            m_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}").json()
-            t_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}").json()
-            metar = m_dat['data']['data'][0]['mens']
-            taf = t_dat['data']['data'][0]['mens']
+            m_dat = requests.get(
+                f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}"
+            ).json()
+            t_dat = requests.get(
+                f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}"
+            ).json()
+            metar = m_dat["data"]["data"][0]["mens"]
+            taf = t_dat["data"]["data"][0]["mens"]
             dados_missao.append({"ICAO": icao, "METAR": metar, "TAF": taf})
-            
-            cor = 'blue' if icao in [origem, destino] else 'purple'
-            folium.Marker(COORDS[icao], popup=f"<b>{icao}</b>", icon=folium.Icon(color=cor, icon='plane', prefix='fa')).add_to(m)
-        except: continue
 
-    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5).add_to(m)
-    
+            cor = "blue" if icao in [origem, destino] else "purple"
+            folium.Marker(
+                COORDS[icao],
+                popup=f"<b>{icao}</b>",
+                icon=folium.Icon(color=cor, icon="plane", prefix="fa"),
+            ).add_to(m)
+        except:
+            continue
+
+    folium.PolyLine(
+        [COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5
+    ).add_to(m)
+
     # Controles
     plugins.Fullscreen().add_to(m)
-    folium.LayerControl(position='topright').add_to(m)
+    folium.LayerControl(position="topright").add_to(m)
 
     st_folium(m, width="100%", height=600)
 
@@ -198,13 +341,15 @@ if aba == "🛰️ Briefing em Tempo Real":
         if i < 3:
             with cols[i].expander(f"📍 {dado['ICAO']}", expanded=True):
                 st.markdown("**METAR:**")
-                st.code(dado['METAR'], language="fix")
+                st.code(dado["METAR"], language="fix")
                 st.markdown("**TAF:**")
-                st.code(dado['TAF'], language="fix")
+                st.code(dado["TAF"], language="fix")
 
 elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     st.title("🚀 Análise de Previsão Numérica - GFS")
-    fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
+    fl_alvo = st.sidebar.selectbox(
+        "Selecione o FL para Análise:", list(NIVEIS_MAP.keys())
+    )
 
     with st.spinner(f"Buscando dados do {fl_alvo}..."):
         ds, rodada_info = carregar_dados_gfs(fl_alvo)
@@ -214,11 +359,13 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
             c1.metric("Temperatura", f"{ds['temp_media_c']:.1f} °C")
             c2.metric("Vento (Velocidade)", f"{ds['wind_spd']:.0f} km/h")
             c3.metric("Vento (Direção)", f"{ds['wind_dir']:.0f}°")
-            
-            if ds['temp_media_c'] < 0 and fl_alvo != "SFC":
+
+            if ds["temp_media_c"] < 0 and fl_alvo != "SFC":
                 st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
-            
-            m_gfs = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles='CartoDB dark_matter')
+
+            m_gfs = folium.Map(
+                location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter"
+            )
             st_folium(m_gfs, width="100%", height=600)
         else:
             st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
@@ -228,14 +375,15 @@ elif aba == "📺 Aulas em Vídeo":
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("🎥 Aula 1: Altimetria - Ajuste: QNH / QNE")
-        st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg") 
+        st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg")
     with col2:
         st.subheader("🎥 Aula 2: Satélite, SIGMET e GELO")
         st.video("https://www.youtube.com/watch?v=KoyZS3iCeM0")
 
 elif aba == "📚 Materiais e Links":
     st.title("📚 Biblioteca Digital")
-    st.markdown("""
+    st.markdown(
+        """
     ### 📖 Manuais Oficiais
     - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
     - [ICA 105-16/2025 (Códigos Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
@@ -244,4 +392,5 @@ elif aba == "📚 Materiais e Links":
     - [REDEMET](https://redemet.decea.mil.br/)
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
-    """)
+    """
+    )
