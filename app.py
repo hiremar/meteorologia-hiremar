@@ -5,7 +5,7 @@ import re
 import xarray as xr
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from streamlit_folium import st_folium
 from folium import plugins
 from herbie import Herbie
@@ -137,10 +137,11 @@ if aba == "🛰️ Briefing em Tempo Real":
             fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
         ).add_to(m)
 
-    # 3. CAMADA DO SATÉLITE GOES-19 (NASA GIBS - WMS TRANSPARENTE)
+    # 3. CAMADA DO SATÉLITE GOES-19 (NASA GIBS - WMS TRANSPARENTE COM DATA UTC ATUAL)
     if show_tsc:
+        data_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         folium.WmsTileLayer(
-            url="https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi",
+            url=f"https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?TIME={data_utc}",
             layers="GOES-East_ABI_Band13_Clean_IR",
             fmt="image/png",
             transparent=True,
@@ -250,4 +251,3 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
-
