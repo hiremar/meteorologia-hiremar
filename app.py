@@ -10,9 +10,6 @@ import requests
 import streamlit as st
 from streamlit_folium import st_folium
 
-# Garante pasta do Herbie se necessário
-os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
-
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
 
@@ -44,34 +41,34 @@ if not api_key:
     st.stop()
 
 
-# --- PROCESSAMENTO GOES-19 (NUVENS DESACOPLADAS E TRANSPARENTES) ---
+# --- FUNÇÃO GOES-19 DESACOPLADO E TRANSPARENTE ---
 @st.cache_data(ttl=900)
-def processar_goes19_transparente():
+def carregar_goes19_nuvens():
     try:
-        # Bounding box exata da América do Sul
+        # Bounding Box América do Sul: [lat_min, lon_min, lat_max, lon_max]
         bounds = [[-55.0, -90.0], [15.0, -30.0]]
 
-        # Busca canal infravermelho limpo
+        # Busca o canal 13 do GOES-East (GOES-19)
         url_img = "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi?VER=1.1.1&SERVICE=WMS&REQUEST=GetMap&LAYERS=goes_east_ch13&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:4326&BBOX=-90.0,-55.0,-30.0,15.0&WIDTH=1200&HEIGHT=1000"
 
-        resp = requests.get(url_img, timeout=12)
+        resp = requests.get(url_img, timeout=10)
         if resp.status_code == 200:
             img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
-            # Remove o fundo escuro tornando os pixels sem nuvens transparentes
+            # Torna fundo preto em 100% transparente
             pixdata = img.load()
             width, height = img.size
             for y in range(height):
                 for x in range(width):
                     r, g, b, a = pixdata[x, y]
-                    if r < 25 and g < 25 and b < 25:
+                    if r < 20 and g < 20 and b < 20:
                         pixdata[x, y] = (0, 0, 0, 0)
 
             buffer = io.BytesIO()
             img.save(buffer, format="PNG")
             buffer.seek(0)
             return buffer, bounds
-    except Exception as e:
+    except Exception:
         pass
     return None, None
 
@@ -132,15 +129,11 @@ def carregar_dados_gfs(fl_alvo):
             return None, "Erro na API"
 
         response = r.json()
-        temp_atual = response["hourly"][f"temperature_{pressao}hPa"][0]
-        wind_spd = response["hourly"][f"windspeed_{pressao}hPa"][0]
-        wind_dir = response["hourly"][f"winddirection_{pressao}hPa"][0]
-
         dados_processados = {
-            "temp_media_c": temp_atual,
-            "wind_spd": wind_spd,
-            "wind_dir": wind_dir,
-            "rodada": "GFS via Open-Meteo (Real-time)",
+            "temp_media_c": response["hourly"][f"temperature_{pressao}hPa"][0],
+            "wind_spd": response["hourly"][f"windspeed_{pressao}hPa"][0],
+            "wind_dir": response["hourly"][f"winddirection_{pressao}hPa"][0],
+            "rodada": "GFS Real-time",
         }
         return dados_processados, dados_processados["rodada"]
     except Exception as e:
@@ -184,7 +177,6 @@ if aba == "🛰️ Briefing em Tempo Real":
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
     cartas_baixa_sel = st.sidebar.multiselect(
         "Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)]
     )
@@ -194,7 +186,6 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # Inicialização do Mapa
     m = folium.Map(
         location=[-15.0, -58.0],
         zoom_start=4,
@@ -223,7 +214,6 @@ if aba == "🛰️ Briefing em Tempo Real":
             transparent=True,
             name=f"Carta {carta}",
             overlay=True,
-            show=True,
         ).add_to(m)
 
     for carta in cartas_alta_sel:
@@ -234,12 +224,11 @@ if aba == "🛰️ Briefing em Tempo Real":
             transparent=True,
             name=f"Carta {carta}",
             overlay=True,
-            show=True,
         ).add_to(m)
 
-    # GOES-19 DESACOPLADO
+    # CAMADA GOES-19
     if show_tsc:
-        img_buf, img_bounds = processar_goes19_transparente()
+        img_buf, img_bounds = carregar_goes19_nuvens()
         if img_buf and img_bounds:
             encoded_img = base64.b64encode(img_buf.getvalue()).decode()
             png_url = f"data:image/png;base64,{encoded_img}"
@@ -268,10 +257,10 @@ if aba == "🛰️ Briefing em Tempo Real":
                         fill_opacity=0.3,
                         popup=s["mens"],
                     ).add_to(m)
-        except:
+        except Exception:
             pass
 
-    # Marcadores e Rota
+    # Aeródromos e Rota
     COORDS = {
         "SBGR": [-23.432, -46.470],
         "SBGL": [-22.810, -43.250],
@@ -304,7 +293,7 @@ if aba == "🛰️ Briefing em Tempo Real":
                 popup=f"<b>{icao}</b>",
                 icon=folium.Icon(color=cor, icon="plane", prefix="fa"),
             ).add_to(m)
-        except:
+        except Exception:
             continue
 
     folium.PolyLine(
@@ -316,7 +305,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st_folium(m, width="100%", height=600)
 
-    # Detalhamento METAR/TAF
+    # METAR e TAF
     st.subheader("🔍 Dados Meteorológicos da Rota")
     cols = st.columns(3)
     for i, dado in enumerate(dados_missao):
@@ -349,16 +338,14 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
                 location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter"
             )
             st_folium(m_gfs, width="100%", height=600)
-        else:
-            st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
 
 elif aba == "📺 Aulas em Vídeo":
     st.title("📺 Centro de Treinamento")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("🎥 Aula 1: Altimetria - Ajuste: QNH / QNE")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("🎥 Aula 1: Altimetria")
         st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg")
-    with col2:
+    with c2:
         st.subheader("🎥 Aula 2: Satélite, SIGMET e GELO")
         st.video("https://www.youtube.com/watch?v=KoyZS3iCeM0")
 
@@ -367,12 +354,8 @@ elif aba == "📚 Materiais e Links":
     st.markdown(
         """
     ### 📖 Manuais Oficiais
-    - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
-    - [ICA 105-16/2025 (Códigos Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
-    - [ICA 105-17/2025 (Manual de Centros Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
-    ### 🔗 Links Úteis
-    - [REDEMET](https://redemet.decea.mil.br/)
-    - [AISWEB](https://aisweb.decea.mil.br/)
-    - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
+    - [ICA 105-15/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
+    - [ICA 105-16/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
+    - [ICA 105-17/2025](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
     """
     )
