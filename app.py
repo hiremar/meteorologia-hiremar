@@ -48,14 +48,14 @@ if not api_key:
     st.stop()
 
 
-# --- PROCESSAMENTO GOES-19 NETCDF (NOAA S3 REAL-TIME) ---
-@st.cache_data(ttl=600)  # Atualização automática a cada 10 minutos (escaneamento Full Disk)
+# --- PROCESSAMENTO GOES-19 NETCDF & OVERLAY EM TEMPO REAL ---
+@st.cache_data(ttl=600)  # Atualização dinâmica a cada 10 minutos (tempo do escaneamento do GOES-19)
 def carregar_goes19_overlay():
-    """Conecta ao bucket S3 da NOAA, lê o arquivo NetCDF mais recente do GOES-19 (Canal 13 - IR),
+    """Busca o NetCDF4 mais recente no S3 da NOAA (latência < 10 min), extrai a matriz
 
-    extrai a matriz física de temperaturas (°C), aplica transparência no solo limpo e
+    de temperatura do IR Termal (Canal 13), aplica transparência no solo limpo
 
-    retorna a imagem PNG base64 pronta para sobrepor no mapa.
+    e entrega a camada desacoplada para o Folium.
     """
     try:
         fs = s3fs.S3FileSystem(anon=True)
@@ -67,49 +67,39 @@ def carregar_goes19_overlay():
         s3_path = f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour}/"
         files = [f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")]
 
-        # Fallback para a hora anterior caso esteja no início de uma nova hora
+        # Fallback para a hora anterior (transição de hora UTC)
         if not files:
             hour_prev = f"{(int(hour) - 1) % 24:02d}"
-            s3_path = (
-                f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour_prev}/"
-            )
-            files = [
-                f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")
-            ]
+            s3_path = f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour_prev}/"
+            files = [f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")]
 
         if not files:
             return None, None
 
         latest_nc = sorted(files)[-1]
 
-        # 1. Leitura direta do NetCDF em memória
+        # 1. Leitura direta em memória
         with fs.open(latest_nc, "rb") as f:
             ds = xr.open_dataset(f, engine="h5netcdf")
             celsius = ds["CMI"].values - 273.15  # Converte Kelvin para Celsius
 
-        # 2. Recorte aproximado da América do Sul na matriz geostacionária 5424x5424
+        # 2. Recorte geostacionário da América do Sul
         celsius_sul = celsius[1800:4800, 1800:4500]
 
-        # 3. Mapeamento de Cores e Transparência
-        # Normalização dos valores térmicos (-80°C a +20°C) para a escala de cinza 0-255
-        img_norm = np.clip(
-            (celsius_sul - (-80)) / (20 - (-80)) * 255, 0, 255
-        ).astype(np.uint8)
+        # 3. Normalização Térmica e Tonalidade Estilo Windy
+        img_norm = np.clip((celsius_sul - (-80)) / (20 - (-80)) * 255, 0, 255).astype(np.uint8)
 
-        # Montagem do array RGBA
-        rgba = np.zeros(
-            (img_norm.shape[0], img_norm.shape[1], 4), dtype=np.uint8
-        )
-        rgba[:, :, 0] = img_norm  # Red
-        rgba[:, :, 1] = img_norm  # Green
-        rgba[:, :, 2] = img_norm  # Blue
+        rgba = np.zeros((img_norm.shape[0], img_norm.shape[1], 4), dtype=np.uint8)
+        rgba[:, :, 0] = (img_norm * 0.8).astype(np.uint8)  # R
+        rgba[:, :, 1] = (img_norm * 0.9).astype(np.uint8)  # G
+        rgba[:, :, 2] = np.clip(img_norm * 1.1 + 15, 0, 255).astype(np.uint8)  # B (Realce Azul)
 
-        # Transparência: Solo/Mar limpo (> 10°C) vira Alfa=0 (100% Transparente). Nuvens viram Alfa=210
-        rgba[:, :, 3] = np.where(celsius_sul < 10.0, 210, 0)
+        # Transparência: Solo limpo (> 10°C) Alfa=0. Nuvens (< 10°C) Alfa proporcional
+        rgba[:, :, 3] = np.where(celsius_sul < 10.0, np.clip((10.0 - celsius_sul) * 5 + 100, 100, 220).astype(np.uint8), 0)
 
         img_pil = Image.fromarray(rgba, "RGBA")
 
-        # 4. Exportação Base64 para o Folium
+        # 4. Codificação Base64
         buffered = io.BytesIO()
         img_pil.save(buffered, format="PNG")
         img_b64 = base64.b64encode(buffered.getvalue()).decode()
@@ -118,7 +108,7 @@ def carregar_goes19_overlay():
         return f"data:image/png;base64,{img_b64}", bounds
 
     except Exception as e:
-        st.sidebar.error(f"Erro ao processar NetCDF do GOES-19: {e}")
+        st.sidebar.error(f"Erro no processamento GOES-19: {e}")
         return None, None
 
 
@@ -128,12 +118,8 @@ def sigmet_to_decimal(texto):
     matches = re.findall(padrao, texto)
     return [
         [
-            -(int(m[1]) + int(m[2]) / 60)
-            if m[0] == "S"
-            else (int(m[1]) + int(m[2]) / 60),
-            -(int(m[4]) + int(m[5]) / 60)
-            if m[3] == "W"
-            else (int(m[4]) + int(m[5]) / 60),
+            -(int(m[1]) + int(m[2]) / 60) if m[0] == "S" else (int(m[1]) + int(m[2]) / 60),
+            -(int(m[4]) + int(m[5]) / 60) if m[3] == "W" else (int(m[4]) + int(m[5]) / 60),
         ]
         for m in matches
     ]
@@ -220,19 +206,13 @@ if aba == "🛰️ Briefing em Tempo Real":
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_goes_ir = st.sidebar.checkbox(
-        "Exibir Satélite GOES-19 (NetCDF NOAA)", value=True
-    )
+    show_goes_ir = st.sidebar.checkbox("Exibir Satélite GOES-19 (NetCDF NOAA)", value=True)
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
-    cartas_baixa_sel = st.sidebar.multiselect(
-        "Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)]
-    )
-    cartas_alta_sel = st.sidebar.multiselect(
-        "Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)]
-    )
+    cartas_baixa_sel = st.sidebar.multiselect("Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)])
+    cartas_alta_sel = st.sidebar.multiselect("Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)])
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
@@ -240,9 +220,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     m = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles=None)
 
     # Camadas de Fundo Cartográfico
-    folium.TileLayer(
-        "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
-    ).add_to(m)
+    folium.TileLayer("CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
     folium.TileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri Satellite",
@@ -289,9 +267,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     # 4. SIGMETs
     if show_sigmet:
         try:
-            s_res = requests.get(
-                f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}"
-            ).json()
+            s_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}").json()
             for s in s_res.get("data", {}).get("data", []):
                 pts = sigmet_to_decimal(s["mens"])
                 if len(pts) >= 3:
@@ -322,12 +298,8 @@ if aba == "🛰️ Briefing em Tempo Real":
     dados_missao = []
     for icao in list(dict.fromkeys([origem, destino, alternativa])):
         try:
-            m_dat = requests.get(
-                f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}"
-            ).json()
-            t_dat = requests.get(
-                f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}"
-            ).json()
+            m_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}").json()
+            t_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}").json()
             metar = m_dat["data"]["data"][0]["mens"]
             taf = t_dat["data"]["data"][0]["mens"]
             dados_missao.append({"ICAO": icao, "METAR": metar, "TAF": taf})
@@ -341,9 +313,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         except Exception:
             continue
 
-    folium.PolyLine(
-        [COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5
-    ).add_to(m)
+    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5).add_to(m)
 
     # Controles
     plugins.Fullscreen().add_to(m)
@@ -364,9 +334,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
 elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     st.title("🚀 Análise de Previsão Numérica - GFS")
-    fl_alvo = st.sidebar.selectbox(
-        "Selecione o FL para Análise:", list(NIVEIS_MAP.keys())
-    )
+    fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
 
     with st.spinner(f"Buscando dados do {fl_alvo}..."):
         ds, rodada_info = carregar_dados_gfs(fl_alvo)
@@ -380,9 +348,7 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
             if ds["temp_media_c"] < 0 and fl_alvo != "SFC":
                 st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
 
-            m_gfs = folium.Map(
-                location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter"
-            )
+            m_gfs = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter")
             st_folium(m_gfs, width="100%", height=600)
         else:
             st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
