@@ -2,10 +2,9 @@ streamlit
 folium
 streamlit-folium
 requests
-pandas
+pillow
 numpy
+pandas
 xarray
-herbie-data
-cfgrib
-eccodes-python
+matplotlib
 netCDF4
