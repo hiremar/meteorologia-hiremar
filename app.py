@@ -10,10 +10,11 @@ from streamlit_folium import st_folium
 from folium import plugins
 from herbie import Herbie
 import os
+
 # Garante que o Herbie tenha onde salvar os arquivos temporários no servidor
 os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
 
-# Estas duas são essenciais para ler o arquivo .grib2 do GFS
+# Essenciais para ler o arquivo .grib2 do GFS
 import cfgrib
 import eccodes
 
@@ -57,9 +58,8 @@ def get_sigmet_color(msg):
     if "ICE" in msg: return "skyblue"
     if "TURB" in msg: return "yellow"
     return "orange"
-# --- FUNÇÕES PARA O MODELO GFS (PROVISÓRIO PARA TESTE) ---
 
-# Tabela de níveis que você pediu
+# --- FUNÇÕES PARA O MODELO GFS ---
 NIVEIS_MAP = {
     "SFC": 1000, "FL050": 850, "FL080": 750, "FL100": 700, 
     "FL120": 600, "FL140": 600, "FL180": 500, "FL220": 400, 
@@ -71,17 +71,12 @@ NIVEIS_MAP = {
 def carregar_dados_gfs(fl_alvo):
     try:
         pressao = NIVEIS_MAP.get(fl_alvo, 500)
-        
-        # URL atualizada com Vento e Temperatura
         url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
-        
         r = requests.get(url)
         if r.status_code != 200:
             return None, "Erro na API"
             
         response = r.json()
-        
-        # Pegamos o primeiro índice da previsão (tempo atual)
         temp_atual = response['hourly'][f'temperature_{pressao}hPa'][0]
         wind_spd = response['hourly'][f'windspeed_{pressao}hPa'][0]
         wind_dir = response['hourly'][f'winddirection_{pressao}hPa'][0]
@@ -99,6 +94,7 @@ def carregar_dados_gfs(fl_alvo):
 # --- MENU LATERAL ---
 st.sidebar.title("✈️ Menu de Navegação")
 aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em Tempo Real", "🚀 Modelo GFS (Vento/Gelo)", "📺 Aulas em Vídeo", "📚 Materiais e Links"])
+
 if aba == "🛰️ Briefing em Tempo Real":
     st.sidebar.subheader("📍 Planejamento de Voo")
     lista_ads = ["SBGR", "SBSP", "SBKP", "SBGL", "SBRJ", "SBRF", "SBPA", "SBCT", "SBBR", "SBBH"]
@@ -107,10 +103,10 @@ if aba == "🛰️ Briefing em Tempo Real":
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_tsc = st.sidebar.checkbox("Exibir Satélite / TSC", value=True)
+    show_tsc = st.sidebar.checkbox("Exibir Satélite GOES-19 (NASA GIBS / IR)", value=True)
+    show_redemet_sat = st.sidebar.checkbox("Exibir Satélite REDEMET (TSC)", value=False)
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
     
-    # Nova subjanela na sidebar para as Cartas (Substituindo Aerovias)
     st.sidebar.markdown("---")
     st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
     cartas_baixa_sel = st.sidebar.multiselect("Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)])
@@ -118,7 +114,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # 1. Inicialização do Mapa (Ordem de pintura importa)
+    # 1. Inicialização do Mapa
     m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
     
     # Camadas de Fundo
@@ -126,7 +122,7 @@ if aba == "🛰️ Briefing em Tempo Real":
                      attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False).add_to(m)
     folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
 
-    # 2. Cartas ENRC Selecionadas (Renderizadas antes dos marcadores)
+    # 2. Cartas ENRC Selecionadas
     for carta in cartas_baixa_sel:
         folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
@@ -141,11 +137,30 @@ if aba == "🛰️ Briefing em Tempo Real":
             fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
         ).add_to(m)
 
-    # 3. Camadas Meteorológicas
+    # 3. CAMADA DO SATÉLITE GOES-19 (NASA GIBS - WMS TRANSPARENTE)
     if show_tsc:
-        folium.WmsTileLayer(url="https://redemet.decea.mil.br/geoserver/wms", layers="satelite:goes16_ch13_realce",
-                            fmt="image/png", transparent=True, name="Nuvens / TSC", overlay=True, opacity=0.6).add_to(m)
+        folium.WmsTileLayer(
+            url="https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi",
+            layers="GOES-East_ABI_Band13_Clean_IR",
+            fmt="image/png",
+            transparent=True,
+            name="Satélite GOES-19 (Nuvens IR - NASA)",
+            overlay=True,
+            opacity=0.65
+        ).add_to(m)
 
+    if show_redemet_sat:
+        folium.WmsTileLayer(
+            url="https://redemet.decea.mil.br/geoserver/wms",
+            layers="satelite:goes16_ch13_realce",
+            fmt="image/png",
+            transparent=True,
+            name="Nuvens / TSC REDEMET",
+            overlay=True,
+            opacity=0.6
+        ).add_to(m)
+
+    # 4. SIGMETs
     if show_sigmet:
         try:
             s_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}").json()
@@ -155,7 +170,7 @@ if aba == "🛰️ Briefing em Tempo Real":
                     folium.Polygon(locations=pts, color=get_sigmet_color(s['mens']), fill=True, fill_opacity=0.3, popup=s['mens']).add_to(m)
         except: pass
 
-    # 4. Marcadores e Rota (No topo de tudo)
+    # 5. Marcadores e Rota
     COORDS = {"SBGR": [-23.432, -46.470], "SBGL": [-22.810, -43.250], "SBSP": [-23.626, -46.656],
               "SBRJ": [-22.910, -43.162], "SBRF": [-8.126, -34.923],  "SBKP": [-23.007, -47.134],
               "SBPA": [-29.994, -51.171], "SBCT": [-25.531, -49.175], "SBBR": [-15.869, -47.917], "SBBH": [-19.624, -43.898]}
@@ -194,24 +209,19 @@ if aba == "🛰️ Briefing em Tempo Real":
 
 elif aba == "🚀 Modelo GFS (Vento/Gelo)":
     st.title("🚀 Análise de Previsão Numérica - GFS")
-    
     fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
 
     with st.spinner(f"Buscando dados do {fl_alvo}..."):
         ds, rodada_info = carregar_dados_gfs(fl_alvo)
-        
         if ds:
             st.success(f"Dados carregados para o {fl_alvo}")
-            
-            # Dashboard de métricas
             c1, c2, c3 = st.columns(3)
             c1.metric("Temperatura", f"{ds['temp_media_c']:.1f} °C")
             c2.metric("Vento (Velocidade)", f"{ds['wind_spd']:.0f} km/h")
             c3.metric("Vento (Direção)", f"{ds['wind_dir']:.0f}°")
             
-            # Análise de Gelo
             if ds['temp_media_c'] < 0 and fl_alvo != "SFC":
-                st.warning(f"❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
+                st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
             
             m_gfs = folium.Map(location=[-15.0, -48.0], zoom_start=4, tiles='CartoDB dark_matter')
             st_folium(m_gfs, width="100%", height=600)
@@ -240,6 +250,4 @@ elif aba == "📚 Materiais e Links":
     - [AISWEB](https://aisweb.decea.mil.br/)
     - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
     """)
-
-
 
