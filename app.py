@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import os
 import re
 import folium
@@ -7,7 +7,7 @@ import requests
 import streamlit as st
 from streamlit_folium import st_folium
 
-# Garante diretório temporário para Herbie/GRIB se necessário
+# Garante diretório temporário para Herbie se necessário
 os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -143,9 +143,6 @@ if aba == "🛰️ Briefing em Tempo Real":
     show_goes_ir = st.sidebar.checkbox(
         "Exibir Satélite GOES-19 (Infravermelho / Nuvens)", value=True
     )
-    show_redemet_sat = st.sidebar.checkbox(
-        "Exibir Satélite REDEMET (TSC)", value=False
-    )
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
     st.sidebar.markdown("---")
@@ -164,13 +161,13 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     # Camadas de Fundo Cartográfico
     folium.TileLayer(
+        "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
+    ).add_to(m)
+    folium.TileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri Satellite",
         name="Satélite (Google Earth)",
         overlay=False,
-    ).add_to(m)
-    folium.TileLayer(
-        "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
     ).add_to(m)
 
     # 2. Cartas ENRC Selecionadas
@@ -196,30 +193,20 @@ if aba == "🛰️ Briefing em Tempo Real":
             show=True,
         ).add_to(m)
 
-    # 3. CAMADA DINÂMICA DO GOES-19 (NASA GIBS - TEMPO REAL & TRANSPARENTE)
+    # 3. CAMADA DINÂMICA DO GOES-19 (NASA GIBS VIA TILE LAYER TEMPO REAL)
     if show_goes_ir:
-        # Pega a data UTC mais recente para alimentar o servidor de tiles da NASA
-        data_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        nasa_wmts_url = (
+            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
+            "GOES-East_ABI_Band13_Clean_IR/default/default/"
+            "GoogleMapsCompatible_Level6/{z}/{y}/{x}.png"
+        )
 
-        folium.WmsTileLayer(
-            url=f"https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?TIME={data_utc}",
-            layers="GOES-East_ABI_Band13_Clean_IR",
-            fmt="image/png",
-            transparent=True,
-            name="GOES-19 (Infravermelho Termal - NASA)",
+        folium.TileLayer(
+            tiles=nasa_wmts_url,
+            attr="NASA GIBS / NOAA GOES-19",
+            name="GOES-19 (Nuvens IR - NASA)",
             overlay=True,
             opacity=0.65,
-        ).add_to(m)
-
-    if show_redemet_sat:
-        folium.WmsTileLayer(
-            url="https://redemet.decea.mil.br/geoserver/wms",
-            layers="satelite:goes16_ch13_realce",
-            fmt="image/png",
-            transparent=True,
-            name="Nuvens / TSC REDEMET",
-            overlay=True,
-            opacity=0.6,
         ).add_to(m)
 
     # 4. SIGMETs
