@@ -1,13 +1,15 @@
-from datetime import datetime, timezone
+import base64
+import io
 import os
 import re
 import folium
 from folium import plugins
+from PIL import Image
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
 
-# Garante diretório temporário para Herbie se necessário
+# Garante pasta do Herbie se necessário
 os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
@@ -41,6 +43,58 @@ if not api_key:
     st.stop()
 
 
+# --- PROCESSAMENTO GOES-19 (NUVENS DESACOPLADAS & TRANSPARENTES) ---
+@st.cache_data(ttl=900)
+def carregar_goes19_overlay():
+    """Baixa o fluxo em tempo real do GOES-19, remove o fundo preto (continente/oceano)
+
+    e entrega uma camada PNG desacoplada para o Folium.
+    """
+    try:
+        # Bounding box América do Sul (Lat Min, Lon Min, Lat Max, Lon Max)
+        bounds = [[-55.0, -90.0], [15.0, -35.0]]
+
+        url_img = "https://cdn.star.nesdis.noaa.gov/GOES19/ABI/FD/GEOCOLOR/latest.jpg"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
+        }
+
+        res = requests.get(url_img, headers=headers, timeout=15)
+        if res.status_code == 200 and len(res.content) > 10000:
+            img = Image.open(io.BytesIO(res.content)).convert("RGBA")
+
+            # Recorte da região da América do Sul no Full Disk
+            w, h = img.size
+            crop_box = (
+                int(w * 0.35),
+                int(h * 0.45),
+                int(w * 0.75),
+                int(h * 0.90),
+            )
+            img_sul = img.crop(crop_box)
+
+            # Algoritmo de Transparência Pixel por Pixel
+            pixdata = img_sul.load()
+            sw, sh = img_sul.size
+            for y in range(sh):
+                for x in range(sw):
+                    r, g, b, a = pixdata[x, y]
+                    # Se o pixel for muito escuro (oceano/terra sem nuvem) -> Transparente (Alfa = 0)
+                    if r < 35 and g < 35 and b < 35:
+                        pixdata[x, y] = (0, 0, 0, 0)
+                    else:
+                        pixdata[x, y] = (r, g, b, 215)
+
+            buffered = io.BytesIO()
+            img_sul.save(buffered, format="PNG")
+            img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            return f"data:image/png;base64,{img_b64}", bounds
+    except Exception as e:
+        print(f"Erro no processamento do GOES-19: {e}")
+
+    return None, None
+
+
 # --- FUNÇÕES DE APOIO ---
 def sigmet_to_decimal(texto):
     padrao = r"([NS])(\d{2})(\d{2})\s([WE])(\d{3})(\d{2})"
@@ -69,7 +123,6 @@ def get_sigmet_color(msg):
     return "orange"
 
 
-# --- FUNÇÕES PARA O MODELO GFS ---
 NIVEIS_MAP = {
     "SFC": 1000,
     "FL050": 850,
@@ -141,7 +194,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.sidebar.subheader("📡 Camadas Ativas")
     show_goes_ir = st.sidebar.checkbox(
-        "Exibir Satélite GOES-19 (Infravermelho / Nuvens)", value=True
+        "Exibir Satélite GOES-19 (Nuvens Desacopladas)", value=True
     )
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
 
@@ -157,7 +210,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
     # 1. Inicialização do Mapa
-    m = folium.Map(location=[-15.0, -48.0], zoom_start=5, tiles=None)
+    m = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles=None)
 
     # Camadas de Fundo Cartográfico
     folium.TileLayer(
@@ -193,21 +246,17 @@ if aba == "🛰️ Briefing em Tempo Real":
             show=True,
         ).add_to(m)
 
-    # 3. CAMADA DINÂMICA DO GOES-19 (NASA GIBS VIA TILE LAYER TEMPO REAL)
+    # 3. CAMADA OVERLAY GOES-19 (NUVENS DESACOPLADAS TRANSPARENTES)
     if show_goes_ir:
-        nasa_wmts_url = (
-            "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/"
-            "GOES-East_ABI_Band13_Clean_IR/default/default/"
-            "GoogleMapsCompatible_Level6/{z}/{y}/{x}.png"
-        )
-
-        folium.TileLayer(
-            tiles=nasa_wmts_url,
-            attr="NASA GIBS / NOAA GOES-19",
-            name="GOES-19 (Nuvens IR - NASA)",
-            overlay=True,
-            opacity=0.65,
-        ).add_to(m)
+        img_url, img_bounds = carregar_goes19_overlay()
+        if img_url and img_bounds:
+            folium.raster_layers.ImageOverlay(
+                image=img_url,
+                bounds=img_bounds,
+                opacity=0.75,
+                name="GOES-19 Nuvens (NOAA Real-time)",
+                interactive=False,
+            ).add_to(m)
 
     # 4. SIGMETs
     if show_sigmet:
@@ -304,7 +353,7 @@ elif aba == "🚀 Modelo GFS (Vento/Gelo)":
                 st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
 
             m_gfs = folium.Map(
-                location=[-15.0, -48.0], zoom_start=4, tiles="CartoDB dark_matter"
+                location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter"
             )
             st_folium(m_gfs, width="100%", height=600)
         else:
