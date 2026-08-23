@@ -3,7 +3,6 @@ import io
 import os
 import re
 from datetime import datetime, timezone
-
 import folium
 from folium import plugins
 import numpy as np
