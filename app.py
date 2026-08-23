@@ -103,8 +103,7 @@ if aba == "🛰️ Briefing em Tempo Real":
     alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
 
     st.sidebar.subheader("📡 Camadas Ativas")
-    show_tsc = st.sidebar.checkbox("Exibir Satélite GOES-19 Infravermelho (NOAA/NESDIS)", value=True)
-    show_redemet_sat = st.sidebar.checkbox("Exibir Satélite REDEMET (TSC)", value=False)
+    show_tsc = st.sidebar.checkbox("Exibir Satélite GOES-19 Infravermelho (Nuvens)", value=True)
     show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
     
     st.sidebar.markdown("---")
@@ -115,8 +114,6 @@ if aba == "🛰️ Briefing em Tempo Real":
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
     # 1. Inicialização do Mapa com FOCO NA AMÉRICA DO SUL
-    limites_america_do_sul = [[-56.0, -110.0], [15.0, -30.0]]
-    
     m = folium.Map(
         location=[-15.0, -58.0],
         zoom_start=4,
@@ -127,9 +124,9 @@ if aba == "🛰️ Briefing em Tempo Real":
     )
     
     # Camadas de Fundo
+    folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
     folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
                      attr='Esri Satellite', name='Satélite (Google Earth)', overlay=False).add_to(m)
-    folium.TileLayer('CartoDB dark_matter', name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
 
     # 2. Cartas ENRC Selecionadas
     for carta in cartas_baixa_sel:
@@ -146,27 +143,16 @@ if aba == "🛰️ Briefing em Tempo Real":
             fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True, show=True
         ).add_to(m)
 
-    # 3. CAMADA DE SATÉLITE REAL GOES-EAST (NESDIS/NOAA INFRARED BAND 13 - SOUTH AMERICA)
+    # 3. CAMADA DE SATÉLITE INFRAVERMELHO (AMÉRICA DO SUL)
     if show_tsc:
-        folium.WmsTileLayer(
-            url="https://nowcoast.noaa.gov/geoserver/satellite/goes_east_band13/wms",
-            layers="goes_east_band13",
-            fmt="image/png",
-            transparent=True,
-            name="Satélite GOES-19 IR (NOAA nesdis)",
-            overlay=True,
-            opacity=0.65
-        ).add_to(m)
-
-    if show_redemet_sat:
         folium.WmsTileLayer(
             url="https://redemet.decea.mil.br/geoserver/wms",
             layers="satelite:goes16_ch13_realce",
             fmt="image/png",
             transparent=True,
-            name="Nuvens / TSC REDEMET",
+            name="Satélite GOES Infravermelho (Nuvens)",
             overlay=True,
-            opacity=0.6
+            opacity=0.65
         ).add_to(m)
 
     # 4. SIGMETs
