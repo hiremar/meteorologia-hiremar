@@ -1,20 +1,17 @@
+import base64
 from datetime import datetime, timezone
 import io
 import os
 import re
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import requests
-import streamlit as st
-import xarray as xr
-
-# Essenciais para o mapa
 import folium
 from folium import plugins
 from PIL import Image
+import requests
+import streamlit as st
 from streamlit_folium import st_folium
+
+# Garante pasta do Herbie se necessário
+os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
@@ -47,41 +44,35 @@ if not api_key:
     st.stop()
 
 
-# --- PROCESSAMENTO NETCDF DO GOES-19 (DESACOPLAMENTO E TRANSPARÊNCIA) ---
-@st.cache_data(ttl=900)  # Atualiza a cada 15 min
-def processar_goes19_netcdf_transparente():
-    """Baixa o último NetCDF do GOES-19 (Canal 13 - IR) ou via raster desacoplado e aplica máscara alfa (transparência) para as nuvens sobre a América do Sul."""
+# --- PROCESSAMENTO GOES-19 (NUVENS DESACOPLADAS E TRANSPARENTES) ---
+@st.cache_data(ttl=900)
+def processar_goes19_transparente():
     try:
-        # 1. Endpoint dinâmico de alta performance com dados limpos de nuvens IR da NOAA / Real-time GOES-East (GOES-19)
-        # Bounding box América do Sul: [lat_min, lon_min, lat_max, lon_max]
+        # Bounding box exata da América do Sul
         bounds = [[-55.0, -90.0], [15.0, -30.0]]
 
-        # Baixa renderização desacoplada em tempo real diretamente tratada para Canal 13 (IR / Nuvens)
+        # Busca canal infravermelho limpo
         url_img = "https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi?VER=1.1.1&SERVICE=WMS&REQUEST=GetMap&LAYERS=goes_east_ch13&FORMAT=image/png&TRANSPARENT=TRUE&SRS=EPSG:4326&BBOX=-90.0,-55.0,-30.0,15.0&WIDTH=1200&HEIGHT=1000"
 
-        resp = requests.get(url_img, timeout=15)
+        resp = requests.get(url_img, timeout=12)
         if resp.status_code == 200:
             img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
-            # 2. Algoritmo de Remoção de Fundo / Ajuste de Alfa das Nuvens
-            data = np.array(img)
-            r, g, b, a = data[:, :, 0], data[:, :, 1], data[:, :, 2], data[:, :, 3]
+            # Remove o fundo escuro tornando os pixels sem nuvens transparentes
+            pixdata = img.load()
+            width, height = img.size
+            for y in range(height):
+                for x in range(width):
+                    r, g, b, a = pixdata[x, y]
+                    if r < 25 and g < 25 and b < 25:
+                        pixdata[x, y] = (0, 0, 0, 0)
 
-            # Mascara tons escuros/pretos do oceano/continente tornando 100% transparentes
-            preto_mask = (r < 25) & (g < 25) & (b < 25)
-            data[:, :, 3][preto_mask] = 0  # Alfa = 0 (Totalmente Transparente)
-
-            img_transparente = Image.fromarray(data)
-
-            # Salva em buffer de memória PNG
             buffer = io.BytesIO()
-            img_transparente.save(buffer, format="PNG")
+            img.save(buffer, format="PNG")
             buffer.seek(0)
-
             return buffer, bounds
     except Exception as e:
-        print(f"Erro ao processar NetCDF/GOES-19: {e}")
-
+        pass
     return None, None
 
 
@@ -113,7 +104,6 @@ def get_sigmet_color(msg):
     return "orange"
 
 
-# --- FUNÇÕES PARA O MODELO GFS ---
 NIVEIS_MAP = {
     "SFC": 1000,
     "FL050": 850,
@@ -204,7 +194,7 @@ if aba == "🛰️ Briefing em Tempo Real":
 
     st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
 
-    # 1. Inicialização do Mapa com FOCO NA AMÉRICA DO SUL
+    # Inicialização do Mapa
     m = folium.Map(
         location=[-15.0, -58.0],
         zoom_start=4,
@@ -214,7 +204,6 @@ if aba == "🛰️ Briefing em Tempo Real":
         tiles=None,
     )
 
-    # Camadas de Fundo Cartográfico
     folium.TileLayer(
         "CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False
     ).add_to(m)
@@ -225,7 +214,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         overlay=False,
     ).add_to(m)
 
-    # 2. Cartas ENRC Selecionadas
+    # Cartas ENRC
     for carta in cartas_baixa_sel:
         folium.WmsTileLayer(
             url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
@@ -248,28 +237,22 @@ if aba == "🛰️ Briefing em Tempo Real":
             show=True,
         ).add_to(m)
 
-    # 3. CAMADA DE SATÉLITE GOES-19 (NUVENS DESACOPLADAS)
+    # GOES-19 DESACOPLADO
     if show_tsc:
-        with st.spinner("Processando camada de nuvens GOES-19..."):
-            img_buf, img_bounds = processar_goes19_netcdf_transparente()
+        img_buf, img_bounds = processar_goes19_transparente()
+        if img_buf and img_bounds:
+            encoded_img = base64.b64encode(img_buf.getvalue()).decode()
+            png_url = f"data:image/png;base64,{encoded_img}"
 
-            if img_buf and img_bounds:
-                # Transforma a imagem gerada em overlay transparente e georeferenciado
-                import base64
+            folium.raster_layers.ImageOverlay(
+                image=png_url,
+                bounds=img_bounds,
+                opacity=0.75,
+                name="GOES-19 Nuvens",
+                interactive=False,
+            ).add_to(m)
 
-                encoded_img = base64.b64encode(img_buf.getvalue()).decode()
-                png_url = f"data:image/png;base64,{encoded_img}"
-
-                folium.raster_layers.ImageOverlay(
-                    image=png_url,
-                    bounds=img_bounds,
-                    opacity=0.75,
-                    name="GOES-19 Nuvens (Desacopladas)",
-                    interactive=False,
-                    cross_origin=False,
-                ).add_to(m)
-
-    # 4. SIGMETs
+    # SIGMETs
     if show_sigmet:
         try:
             s_res = requests.get(
@@ -288,7 +271,7 @@ if aba == "🛰️ Briefing em Tempo Real":
         except:
             pass
 
-    # 5. Marcadores e Rota
+    # Marcadores e Rota
     COORDS = {
         "SBGR": [-23.432, -46.470],
         "SBGL": [-22.810, -43.250],
@@ -328,7 +311,6 @@ if aba == "🛰️ Briefing em Tempo Real":
         [COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5
     ).add_to(m)
 
-    # Controles
     plugins.Fullscreen().add_to(m)
     folium.LayerControl(position="topright").add_to(m)
 
