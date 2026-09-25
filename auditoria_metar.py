@@ -330,11 +330,24 @@ def enviar(svc, buf, nome, pasta_id):
     media = MediaIoBaseUpload(buf, mimetype=XLSX_MIME, resumable=False)
     existente = achar_arquivo(svc, nome, pasta_id)
     if existente:
-        svc.files().update(fileId=existente, media_body=media, supportsAllDrives=True).execute()
+        svc.files().update(
+            fileId=existente, 
+            media_body=media, 
+            supportsAllDrives=True
+        ).execute()
         print(f'♻️  Atualizado no Drive: {nome}')
     else:
-        svc.files().create(body={'name': nome, 'parents': [pasta_id]}, media_body=media,
-                           fields='id', supportsAllDrives=True).execute()
+        # Força o salvamento direto no diretório pai compartilhado
+        body = {
+            'name': nome, 
+            'parents': [pasta_id]
+        }
+        svc.files().create(
+            body=body, 
+            media_body=media, 
+            fields='id', 
+            supportsAllDrives=True
+        ).execute()
         print(f'📁 Criado no Drive: {nome}')
 
 
