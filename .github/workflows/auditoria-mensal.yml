@@ -40,3 +40,16 @@ jobs:
           else
             python auditoria_metar.py
           fi
+
+      - name: Atualizar planilha de Indicadores (número de mensagens + erros de consistência)
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          INDICADORES_FOLDER_ID: ${{ secrets.INDICADORES_FOLDER_ID }}
+          MES: ${{ github.event.inputs.mes }}
+        run: |
+          if [ -n "$MES" ]; then
+            python atualizar_indicadores_drive.py --mes "$MES"
+          else
+            python atualizar_indicadores_drive.py
+          fi
