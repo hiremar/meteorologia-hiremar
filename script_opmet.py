@@ -96,10 +96,27 @@ for aero in AEROPORTOS:
 
         if mensagens_lista:
             df_novos = pd.DataFrame(mensagens_lista)
-            if aero_upper in abas_consolidadas:
-                abas_consolidadas[aero_upper] = pd.concat([abas_consolidadas[aero_upper], df_novos], ignore_index=True)
-            else:
-                abas_consolidadas[aero_upper] = df_novos
+
+            # --- FILTRO DE MÊS (correção da virada de mês) ---
+            # A busca na REDEMET sempre traz os últimos 4 dias (T-4), então perto da
+            # virada do mês ela também traz mensagens do mês ANTERIOR (ex.: dia 01/10
+            # ainda traz mensagens de 27 a 30/09). Sem esse filtro, essas mensagens de
+            # setembro seriam gravadas de novo dentro da planilha de outubro (que já
+            # foram gravadas corretamente na planilha de setembro nos dias anteriores).
+            # Aqui a gente converte a data de cada mensagem e mantém só as que
+            # pertencem ao mesmo ano/mês em que o script está rodando hoje (`hoje`).
+            df_novos['DATA_HORA_DT'] = pd.to_datetime(df_novos['DATA_HORA_UTC'], errors='coerce')
+            df_novos = df_novos[
+                (df_novos['DATA_HORA_DT'].dt.year == hoje.year)
+                & (df_novos['DATA_HORA_DT'].dt.month == hoje.month)
+            ].drop(columns=['DATA_HORA_DT'])
+
+            if not df_novos.empty:
+                if aero_upper in abas_consolidadas:
+                    abas_consolidadas[aero_upper] = pd.concat([abas_consolidadas[aero_upper], df_novos], ignore_index=True)
+                else:
+                    abas_consolidadas[aero_upper] = df_novos
+
     except Exception as e:
         print(f"❌ Erro ao consultar {aero_upper}: {e}")
 
