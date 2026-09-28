@@ -2,7 +2,7 @@ import base64
 import io
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import folium
 from folium import plugins
 import numpy as np
@@ -47,69 +47,125 @@ if not api_key:
     st.stop()
 
 
-# --- PROCESSAMENTO GOES-19 NETCDF & OVERLAY EM TEMPO REAL ---
-@st.cache_data(ttl=600)  # Atualização dinâmica a cada 10 minutos (tempo do escaneamento do GOES-19)
+# --- Região do mapa e resolução ---------------------------------------
+LAT_MIN, LAT_MAX = -58.0, 16.0
+LON_MIN, LON_MAX = -95.0, -25.0
+RES_GRAUS = 0.05          # 0.05° ≈ 5 km. Menor = mais nítido, porém mais pesado
+
+
+def _reprojetar_geos_para_latlon(x, y, lon0_deg, H, r_eq, r_pol):
+    """O satélite enxerga o planeta 'de longe' (projeção geostacionária).
+    O Folium espera lat/lon. Aqui, para CADA pixel do mapa final, calculamos
+    de qual pixel do satélite ele vem (fórmulas do manual GOES-R PUG)."""
+    lons = np.arange(LON_MIN, LON_MAX, RES_GRAUS)
+
+    # Linhas espaçadas em Mercator, que é como o Leaflet desenha o mapa.
+    # (Se fossem espaçadas em latitude pura, a imagem ficaria deslocada.)
+    merc = lambda lat: np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+    n_lin = int(round((LAT_MAX - LAT_MIN) / RES_GRAUS * 1.15))
+    ys = np.linspace(merc(LAT_MAX), merc(LAT_MIN), n_lin)
+    lats = np.degrees(2 * np.arctan(np.exp(ys)) - np.pi / 2)
+
+    lon_g, lat_g = np.meshgrid(np.radians(lons), np.radians(lats))
+    lon0 = np.radians(lon0_deg)
+    e2 = 1 - (r_pol / r_eq) ** 2
+
+    phi_c = np.arctan((r_pol ** 2 / r_eq ** 2) * np.tan(lat_g))
+    r_c = r_pol / np.sqrt(1 - e2 * np.cos(phi_c) ** 2)
+    s_x = H - r_c * np.cos(phi_c) * np.cos(lon_g - lon0)
+    s_y = -r_c * np.cos(phi_c) * np.sin(lon_g - lon0)
+    s_z = r_c * np.sin(phi_c)
+
+    visivel = H * (H - s_x) >= s_y ** 2 + (r_eq ** 2 / r_pol ** 2) * s_z ** 2
+    y_ang = np.arctan(s_z / s_x)
+    x_ang = np.arcsin(-s_y / np.sqrt(s_x ** 2 + s_y ** 2 + s_z ** 2))
+
+    # ângulo de varredura -> número da linha/coluna na matriz do arquivo
+    col = np.rint((x_ang - x[0]) / (x[1] - x[0])).astype(int)
+    lin = np.rint((y_ang - y[0]) / (y[1] - y[0])).astype(int)
+    ok = visivel & (col >= 0) & (col < len(x)) & (lin >= 0) & (lin < len(y))
+    return lin, col, ok
+
+
+def _colorir_ir(tc):
+    """Temperatura de brilho (°C) -> cor RGBA. Quanto mais frio, mais alto o topo
+    da nuvem (CBs em amarelo/laranja/vermelho). Solo quente fica transparente."""
+    #        °C    R    G    B    A
+    pts = np.array([
+        [ 10, 255, 255, 255,   0],
+        [ -5, 235, 235, 235,  90],
+        [-20, 200, 210, 230, 170],
+        [-30,  90, 150, 255, 220],
+        [-40,   0, 220, 220, 235],
+        [-50,  60, 220,  60, 245],
+        [-58, 255, 240,   0, 250],
+        [-65, 255, 130,   0, 255],
+        [-72, 220,   0,   0, 255],
+        [-80, 255,   0, 200, 255],
+    ], dtype=float)
+    t = pts[:, 0][::-1]          # np.interp exige eixo crescente, então invertemos
+    rgba = np.zeros(tc.shape + (4,), dtype=np.uint8)
+    for i in range(4):
+        rgba[..., i] = np.interp(tc, t, pts[:, i + 1][::-1]).astype(np.uint8)
+    return rgba
+
+
+@st.cache_data(ttl=600, show_spinner=False)   # 10 min = intervalo de varredura do GOES
 def carregar_goes19_overlay():
-    """Busca o NetCDF4 mais recente no S3 da NOAA (latência < 10 min), extrai a matriz
-
-    de temperatura do IR Termal (Canal 13), aplica transparência no solo limpo
-
-    e entrega a camada desacoplada para o Folium.
-    """
     try:
         fs = s3fs.S3FileSystem(anon=True)
-        now_utc = datetime.now(timezone.utc)
-        year = now_utc.strftime("%Y")
-        day_of_year = now_utc.strftime("%j")
-        hour = now_utc.strftime("%H")
+        agora = datetime.now(timezone.utc)
 
-        s3_path = f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour}/"
-        files = [f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")]
+        # Procura o arquivo C13 mais recente na hora atual; se não houver, na anterior.
+        # (timedelta evita o erro de virada de dia que o "hour-1" tinha)
+        arquivos = []
+        for delta in (0, 1):
+            t = agora - timedelta(hours=delta)
+            pasta = f"noaa-goes19/ABI-L2-CMIPF/{t:%Y}/{t:%j}/{t:%H}/"
+            try:
+                arquivos = [f for f in fs.ls(pasta) if "M6C13" in f and f.endswith(".nc")]
+            except FileNotFoundError:
+                arquivos = []
+            if arquivos:
+                break
+        if not arquivos:
+            return None, None, None
+        ultimo = sorted(arquivos)[-1]
 
-        # Fallback para a hora anterior (transição de hora UTC)
-        if not files:
-            hour_prev = f"{(int(hour) - 1) % 24:02d}"
-            s3_path = f"noaa-goes19/ABI-L2-CMIPF/{year}/{day_of_year}/{hour_prev}/"
-            files = [f for f in fs.ls(s3_path) if "M6C13" in f and f.endswith(".nc")]
-
-        if not files:
-            return None, None
-
-        latest_nc = sorted(files)[-1]
-
-        # 1. Leitura direta em memória
-        with fs.open(latest_nc, "rb") as f:
+        with fs.open(ultimo, "rb") as f:
             ds = xr.open_dataset(f, engine="h5netcdf")
-            celsius = ds["CMI"].values - 273.15  # Converte Kelvin para Celsius
+            p = ds["goes_imager_projection"].attrs
+            r_eq, r_pol = float(p["semi_major_axis"]), float(p["semi_minor_axis"])
+            H = float(p["perspective_point_height"]) + r_eq
+            lon0 = float(p["longitude_of_projection_origin"])
+            x = ds["x"].values.astype("float64")
+            y = ds["y"].values.astype("float64")
 
-        # 2. Recorte geostacionário da América do Sul
-        celsius_sul = celsius[1800:4800, 1800:4500]
+            lin, col, ok = _reprojetar_geos_para_latlon(x, y, lon0, H, r_eq, r_pol)
 
-        # 3. Normalização Térmica e Tonalidade Estilo Windy
-        img_norm = np.clip((celsius_sul - (-80)) / (20 - (-80)) * 255, 0, 255).astype(np.uint8)
+            # Lê só o "retângulo" do disco que interessa (bem menos dados do S3)
+            r0, r1 = lin[ok].min(), lin[ok].max() + 1
+            c0, c1 = col[ok].min(), col[ok].max() + 1
+            pedaco = ds["CMI"].isel(y=slice(r0, r1), x=slice(c0, c1)).values
 
-        rgba = np.zeros((img_norm.shape[0], img_norm.shape[1], 4), dtype=np.uint8)
-        rgba[:, :, 0] = (img_norm * 0.8).astype(np.uint8)  # R
-        rgba[:, :, 1] = (img_norm * 0.9).astype(np.uint8)  # G
-        rgba[:, :, 2] = np.clip(img_norm * 1.1 + 15, 0, 255).astype(np.uint8)  # B (Realce Azul)
+        tc = np.full(lin.shape, np.nan)
+        tc[ok] = pedaco[lin[ok] - r0, col[ok] - c0] - 273.15   # Kelvin -> °C
+        rgba = _colorir_ir(np.nan_to_num(tc, nan=99.0))
+        rgba[np.isnan(tc), 3] = 0
 
-        # Transparência: Solo limpo (> 10°C) Alfa=0. Nuvens (< 10°C) Alfa proporcional
-        rgba[:, :, 3] = np.where(celsius_sul < 10.0, np.clip((10.0 - celsius_sul) * 5 + 100, 100, 220).astype(np.uint8), 0)
+        buf = io.BytesIO()
+        Image.fromarray(rgba, "RGBA").save(buf, format="PNG", optimize=True)
+        img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-        img_pil = Image.fromarray(rgba, "RGBA")
-
-        # 4. Codificação Base64
-        buffered = io.BytesIO()
-        img_pil.save(buffered, format="PNG")
-        img_b64 = base64.b64encode(buffered.getvalue()).decode()
-
-        bounds = [[-55.0, -90.0], [15.0, -35.0]]
-        return f"data:image/png;base64,{img_b64}", bounds
+        bounds = [[LAT_MIN, LON_MIN], [LAT_MAX, LON_MAX]]
+        # hora da imagem, tirada do nome do arquivo: ..._s20262711820...
+        hora = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})", ultimo)
+        carimbo = f"{hora[1]} dia {hora[2]} {hora[3]}:{hora[4]}Z" if hora else "?"
+        return f"data:image/png;base64,{img_b64}", bounds, carimbo
 
     except Exception as e:
         st.sidebar.error(f"Erro no processamento GOES-19: {e}")
-        return None, None
-
+        return None, None, None
 
 # --- FUNÇÕES DE APOIO ---
 def sigmet_to_decimal(texto):
@@ -253,15 +309,18 @@ if aba == "🛰️ Briefing em Tempo Real":
     # 3. CAMADA OVERLAY GOES-19 (NETCDF4 REAL-TIME S3)
     if show_goes_ir:
         with st.spinner("Conectando ao S3 da NOAA e extraindo NetCDF do GOES-19..."):
-            img_url, img_bounds = carregar_goes19_overlay()
+            img_url, img_bounds, carimbo = carregar_goes19_overlay()
             if img_url and img_bounds:
                 folium.raster_layers.ImageOverlay(
                     image=img_url,
                     bounds=img_bounds,
-                    opacity=0.75,
-                    name="GOES-19 Nuvens (NetCDF NOAA)",
+                    opacity=0.85,
+                    name=f"GOES-19 IR C13 ({carimbo})",
                     interactive=False,
                 ).add_to(m)
+                st.caption(f"🛰️ GOES-19 Canal 13 (IR) — imagem das {carimbo}")
+            else:
+                st.warning("Não foi possível obter a imagem GOES-19 agora.")
 
     # 4. SIGMETs
     if show_sigmet:
