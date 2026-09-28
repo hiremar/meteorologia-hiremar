@@ -2,8 +2,15 @@
 """
 Preenche a planilha "Indicadores de Meteorologia atualizada 2026.xlsx" (no
 Google Drive) com os resultados da auditoria de consistência de um mês:
-número de mensagens e erros de consistência, por aeródromo — recalculando
-também a % de mensagens consistentes.
+número de mensagens e erros de consistência, por aeródromo.
+
+As colunas de porcentagem (G = pontualidade, H = consistência) já têm
+FÓRMULA na planilha (ex.: =(D58-F58)/D58) — este script nunca escreve nelas,
+só em D e F. A fórmula recalcula sozinha quando a planilha é aberta.
+
+Se a linha do mês/ano ainda não existir na aba do aeródromo, o script cria
+uma nova linha automaticamente (copiando o nome da estação da última linha
+existente e repetindo as fórmulas de G/H para a linha nova).
 
 Fonte dos dados: a aba RESUMO de AUDITORIA_<MES><ANO> CONSISTÊNCIA.xlsx,
 gerada pelo auditoria_metar.py (mesma pasta CONSISTENCIA do Drive).
@@ -101,7 +108,7 @@ def ler_resumo(buf_auditoria):
 
 def atualizar_indicadores(buf_indicadores, resumo, ano, mes_pt):
     wb = openpyxl.load_workbook(buf_indicadores)  # mantém fórmulas/formatação
-    nao_encontrados, sem_linha = [], []
+    nao_encontrados, linhas_criadas = [], []
 
     for aero, (mensagens, alertas) in resumo.items():
         if aero not in wb.sheetnames:
@@ -109,27 +116,42 @@ def atualizar_indicadores(buf_indicadores, resumo, ano, mes_pt):
             continue
 
         ws = wb[aero]
+
         linha_alvo = None
+        ultima_linha_dado = None
         for row in ws.iter_rows(min_row=2):
+            if row[0].value is not None:
+                ultima_linha_dado = row
             if row[1].value == ano and row[2].value == mes_pt:
                 linha_alvo = row
                 break
 
         if linha_alvo is None:
-            sem_linha.append(aero)
-            continue
+            # Mês ainda não tem linha na planilha -> cria uma nova,
+            # logo depois da última linha com dado, copiando o nome da
+            # estação e repetindo as fórmulas de pontualidade/consistência.
+            nova_linha_num = (ultima_linha_dado[0].row + 1) if ultima_linha_dado else 2
+            estacao = ultima_linha_dado[0].value if ultima_linha_dado else aero
+            ws.cell(row=nova_linha_num, column=1, value=estacao)          # A: Estação
+            ws.cell(row=nova_linha_num, column=2, value=ano)              # B: ano
+            ws.cell(row=nova_linha_num, column=3, value=mes_pt)           # C: mês
+            ws.cell(row=nova_linha_num, column=7,                        # G: % pontualidade
+                    value=f'=(D{nova_linha_num}-E{nova_linha_num})/D{nova_linha_num}')
+            ws.cell(row=nova_linha_num, column=8,                        # H: % consistência
+                    value=f'=(D{nova_linha_num}-F{nova_linha_num})/D{nova_linha_num}')
+            linha_alvo = list(ws[nova_linha_num])
+            linhas_criadas.append(aero)
 
-        linha_alvo[3].value = mensagens                                  # D: numero de mensagens
-        linha_alvo[5].value = alertas                                    # F: erros de consistência
-        if mensagens:
-            linha_alvo[7].value = round(1 - (alertas / mensagens), 10)   # H: % consistentes
-        # E (mensagens atrasadas) e G (% pontualidade) ficam de fora —
-        # vêm de outra fonte (relatório do DECEA / script de atrasos).
+        linha_alvo[3].value = mensagens   # D: numero de mensagens
+        linha_alvo[5].value = alertas     # F: erros de consistência
+        # G e H já são fórmulas — não escrevemos nelas, a planilha recalcula
+        # sozinha ao abrir. E (mensagens atrasadas) também não é tocado aqui:
+        # vem do relatório do DECEA, via o notebook do Colab.
 
     saida = io.BytesIO()
     wb.save(saida)
     saida.seek(0)
-    return saida, nao_encontrados, sem_linha
+    return saida, nao_encontrados, linhas_criadas
 
 
 def mes_anterior(hoje=None):
@@ -174,16 +196,20 @@ def main():
     print(f'⬇️  Baixando {NOME_PLANILHA_INDICADORES}')
     buf_indicadores = baixar(svc, fid_indicadores)
 
-    saida, nao_encontrados, sem_linha = atualizar_indicadores(buf_indicadores, resumo, ano, mes_pt)
+    saida, nao_encontrados, linhas_criadas = atualizar_indicadores(buf_indicadores, resumo, ano, mes_pt)
 
     enviar(svc, saida, fid_indicadores, pasta_indicadores, NOME_PLANILHA_INDICADORES)
 
     if nao_encontrados:
         print(f'⚠️  Aeródromos da auditoria sem aba correspondente em Indicadores: {nao_encontrados}')
-    if sem_linha:
-        print(f'⚠️  Aeródromos sem linha de {mes_pt}/{ano} já existente em Indicadores: {sem_linha}')
+    if linhas_criadas:
+        print(f'ℹ️  Linha de {mes_pt}/{ano} criada automaticamente para: {linhas_criadas}')
 
     print('✅ Indicadores atualizados (número de mensagens + erros de consistência).')
+
+
+if __name__ == '__main__':
+    main()
 
 
 if __name__ == '__main__':
