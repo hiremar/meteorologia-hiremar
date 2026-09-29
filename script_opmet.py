@@ -10,7 +10,11 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 # --- 1. CONFIGURAÇÕES ---
-API_KEY = 'tyZcJePk7Y5v7QZGbqXiDQwHaGQFli9J5HfQh15f'
+# A chave NÃO fica mais escrita aqui: vem do cofre do GitHub (Settings -> Secrets
+# -> Actions -> REDEMET_KEY), entregue pelo agendador.yml como variável de ambiente.
+API_KEY = os.environ.get('REDEMET_KEY')
+if not API_KEY:
+    raise SystemExit('ERRO: secret REDEMET_KEY não configurado no GitHub (Settings -> Secrets -> Actions).')
 AEROPORTOS = [
     'sbaf', 'sdam', 'sbbp', 'sbcb', 'sdco', 'sbes', 'sbgl', 'sbgr', 'sbgw',
     'sbjd', 'sbjh', 'sbjr', 'sbkp', 'sbmi', 'sbmt', 'sbrj', 'sbsc', 'sbsj',
