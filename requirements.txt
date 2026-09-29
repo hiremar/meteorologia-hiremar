@@ -1,13 +1,15 @@
-streamlit
-folium
+streamlit>=1.40
+folium>=0.19
 streamlit-folium
 requests
 pillow
 numpy
 pandas
 xarray
-matplotlib
 netCDF4
 s3fs
 h5netcdf
 h5py
+# leitura do GRIB2 do modelo GFS
+cfgrib
+eccodes

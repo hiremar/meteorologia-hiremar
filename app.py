@@ -1,437 +1,310 @@
-import base64
-import io
-import os
-import re
-from datetime import datetime, timedelta, timezone
+"""Portal de Meteorologia Aeronáutica — Prof. Hiremar.
+
+Este arquivo só monta a TELA. O trabalho pesado está na pasta "modulos":
+cada assunto num arquivo (satélite, REDEMET, modelo GFS, desenho do mapa...).
+"""
+import html
+from datetime import datetime, timezone
+from pathlib import Path
+
 import folium
 from folium import plugins
-import numpy as np
-from PIL import Image
-import requests
-import s3fs
 import streamlit as st
-from streamlit_folium import st_folium
-import xarray as xr
+import streamlit.components.v1 as components
 
-# Garante pasta do Herbie se necessário
-os.environ["HERBIE_SAVE_DIR"] = "/tmp/herbie_data"
+from modulos import aerodromos as ad
+from modulos import camadas_mapa as cm
+from modulos import metar as mt
+from modulos import modelo_gfs as gfs
+from modulos import redemet as rd
+from modulos import satelite as sat
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(layout="wide", page_title="Portal de Meteorologia Prof. Hiremar")
+st.set_page_config(layout="wide", page_title="Meteorologia Aeronáutica · Prof. Hiremar", page_icon="🛰️")
 
-# --- ESTILO VISUAL (MATRIX / AERONÁUTICO) ---
-st.markdown(
-    """
-    <style>
-        .stApp { background-color: #0b1a27; }
-        h1, h2, h3, h4, p, li, label, div, span { color: #f1c40f !important; font-family: 'Segoe UI', sans-serif; }
-        [data-testid="stSidebar"] { background-color: #1e1e1e; border-right: 2px solid #00f2ff; }
-        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] p, [data-testid="stSidebar"] span { color: #00f2ff !important; }
-        code { color: #00ff00 !important; background-color: #000000 !important; font-size: 1.1em !important; border: 1px solid #00ff00; }
-        .streamlit-expanderHeader { background-color: #1e1e1e !important; border: 1px solid #00f2ff !important; color: #ffffff !important; }
-        a { color: #00f2ff !important; text-decoration: none; font-weight: bold; }
-        a:hover { color: #f1c40f !important; }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
+# Cores gerais ficam em .streamlit/config.toml. Aqui só os detalhes.
+st.markdown("""
+<style>
+  h1, h2, h3 { color: #f1c40f !important; }
+  .block-container { padding-top: 2.2rem; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 10px; }
+  .chip { background:#13263a; border:1px solid #24445f; color:#c9d3dc; border-radius:999px;
+          padding:2px 10px; font-size:.8rem; }
+  .chip.alerta { border-color:#d99a00; color:#ffd666; }
+  .msg { font-family: Consolas, 'Courier New', monospace; font-size:.9rem; line-height:1.45;
+         white-space: pre-wrap; word-break: break-word;       /* quebra a linha: nada escondido */
+         background:#06131e; color:#bdf5c4; border-left:3px solid #2e9e44;
+         border-radius:4px; padding:8px 10px; margin:2px 0 10px; }
+  .msg.taf { color:#cfe3ff; border-left-color:#3f6fd8; }
+  .cartao-titulo { display:flex; align-items:center; gap:8px; font-weight:700; color:#f1c40f; }
+  .cat-chip { font:700 11px/16px 'Segoe UI',Arial; padding:0 6px; border-radius:3px; }
+  .rotulo { color:#9fb3c4; font-size:.8rem; margin-top:4px; }
+</style>
+""", unsafe_allow_html=True)
 
-# --- SEGURANÇA DA API ---
-if "REDEMET_KEY" in st.secrets:
+# --- Chave da REDEMET (fica nos "Secrets" do Streamlit, nunca no código) ---
+try:
     api_key = st.secrets["REDEMET_KEY"]
-else:
-    api_key = st.sidebar.text_input("REDEMET API KEY", type="password")
-
+except Exception:            # sem arquivo de secrets (ex.: rodando no seu computador)
+    api_key = None
 if not api_key:
-    st.error("⚠️ API KEY necessária para carregar os dados.")
+    api_key = st.sidebar.text_input("REDEMET API KEY", type="password")
+if not api_key:
+    st.error("⚠️ Informe a chave da API REDEMET para carregar os dados.")
     st.stop()
 
 
-# --- Região do mapa e resolução ---------------------------------------
-LAT_MIN, LAT_MAX = -58.0, 16.0
-LON_MIN, LON_MAX = -95.0, -25.0
-RES_GRAUS = 0.05          # 0.05° ≈ 5 km. Menor = mais nítido, porém mais pesado
+# ============================================================================
+# CACHE: guarda o resultado por um tempo, para não refazer a cada clique
+# ============================================================================
+@st.cache_data(ttl=600, show_spinner=False)          # 10 min = intervalo de varredura do GOES
+def goes(canal):
+    return sat.carregar_overlay(canal)
 
 
-def _reprojetar_geos_para_latlon(x, y, lon0_deg, H, r_eq, r_pol):
-    """O satélite enxerga o planeta 'de longe' (projeção geostacionária).
-    O Folium espera lat/lon. Aqui, para CADA pixel do mapa final, calculamos
-    de qual pixel do satélite ele vem (fórmulas do manual GOES-R PUG)."""
-    lons = np.arange(LON_MIN, LON_MAX, RES_GRAUS)
-
-    # Linhas espaçadas em Mercator, que é como o Leaflet desenha o mapa.
-    # (Se fossem espaçadas em latitude pura, a imagem ficaria deslocada.)
-    merc = lambda lat: np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
-    n_lin = int(round((LAT_MAX - LAT_MIN) / RES_GRAUS * 1.15))
-    ys = np.linspace(merc(LAT_MAX), merc(LAT_MIN), n_lin)
-    lats = np.degrees(2 * np.arctan(np.exp(ys)) - np.pi / 2)
-
-    lon_g, lat_g = np.meshgrid(np.radians(lons), np.radians(lats))
-    lon0 = np.radians(lon0_deg)
-    e2 = 1 - (r_pol / r_eq) ** 2
-
-    phi_c = np.arctan((r_pol ** 2 / r_eq ** 2) * np.tan(lat_g))
-    r_c = r_pol / np.sqrt(1 - e2 * np.cos(phi_c) ** 2)
-    s_x = H - r_c * np.cos(phi_c) * np.cos(lon_g - lon0)
-    s_y = -r_c * np.cos(phi_c) * np.sin(lon_g - lon0)
-    s_z = r_c * np.sin(phi_c)
-
-    visivel = H * (H - s_x) >= s_y ** 2 + (r_eq ** 2 / r_pol ** 2) * s_z ** 2
-    y_ang = np.arctan(s_z / s_x)
-    x_ang = np.arcsin(-s_y / np.sqrt(s_x ** 2 + s_y ** 2 + s_z ** 2))
-
-    # ângulo de varredura -> número da linha/coluna na matriz do arquivo
-    col = np.rint((x_ang - x[0]) / (x[1] - x[0])).astype(int)
-    lin = np.rint((y_ang - y[0]) / (y[1] - y[0])).astype(int)
-    ok = visivel & (col >= 0) & (col < len(x)) & (lin >= 0) & (lin < len(y))
-    return lin, col, ok
+@st.cache_data(ttl=300, show_spinner=False)          # 5 min
+def metars_e_tafs(chave):
+    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
+    tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_ICAO, chave)
+    return metars, tafs, [e for e in (e1, e2) if e]
 
 
-def _colorir_ir(tc):
-    """Temperatura de brilho (°C) -> cor RGBA. Quanto mais frio, mais alto o topo
-    da nuvem (CBs em amarelo/laranja/vermelho). Solo quente fica transparente."""
-    #        °C    R    G    B    A
-    pts = np.array([
-        [ 10, 255, 255, 255,   0],
-        [ -5, 235, 235, 235,  90],
-        [-20, 200, 210, 230, 170],
-        [-30,  90, 150, 255, 220],
-        [-40,   0, 220, 220, 235],
-        [-50,  60, 220,  60, 245],
-        [-58, 255, 240,   0, 250],
-        [-65, 255, 130,   0, 255],
-        [-72, 220,   0,   0, 255],
-        [-80, 255,   0, 200, 255],
-    ], dtype=float)
-    t = pts[:, 0][::-1]          # np.interp exige eixo crescente, então invertemos
-    rgba = np.zeros(tc.shape + (4,), dtype=np.uint8)
-    for i in range(4):
-        rgba[..., i] = np.interp(tc, t, pts[:, i + 1][::-1]).astype(np.uint8)
-    return rgba
+@st.cache_data(ttl=300, show_spinner=False)
+def lista_sigmets(chave):
+    return rd.sigmets(chave)
 
 
-@st.cache_data(ttl=600, show_spinner=False)   # 10 min = intervalo de varredura do GOES
-def carregar_goes19_overlay():
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=4)   # 1 h
+def modelo(horas_a_frente, hora_cheia_utc):
+    # 'hora_cheia_utc' só serve para renovar o cache quando muda a hora
+    conteudo, info = gfs.baixar(horas_a_frente)
+    return gfs.ler_grib(conteudo), info
+
+
+def fmt_z(dt):
+    return dt.strftime("%d/%m %H:%MZ") if dt else "?"
+
+
+def mostrar_mapa(m, altura):
+    """O mapa vai para a página como HTML pronto: arrastar e dar zoom NÃO
+    recarregam o site (antes, cada interação podia reexecutar o script).
+    Se um dia o Streamlit mudar esse recurso, cai no streamlit-folium."""
     try:
-        fs = s3fs.S3FileSystem(anon=True)
-        agora = datetime.now(timezone.utc)
-
-        # Procura o arquivo C13 mais recente na hora atual; se não houver, na anterior.
-        # (timedelta evita o erro de virada de dia que o "hour-1" tinha)
-        arquivos = []
-        for delta in (0, 1):
-            t = agora - timedelta(hours=delta)
-            pasta = f"noaa-goes19/ABI-L2-CMIPF/{t:%Y}/{t:%j}/{t:%H}/"
-            try:
-                arquivos = [f for f in fs.ls(pasta) if "M6C13" in f and f.endswith(".nc")]
-            except FileNotFoundError:
-                arquivos = []
-            if arquivos:
-                break
-        if not arquivos:
-            return None, None, None
-        ultimo = sorted(arquivos)[-1]
-
-        with fs.open(ultimo, "rb") as f:
-            ds = xr.open_dataset(f, engine="h5netcdf")
-            p = ds["goes_imager_projection"].attrs
-            r_eq, r_pol = float(p["semi_major_axis"]), float(p["semi_minor_axis"])
-            H = float(p["perspective_point_height"]) + r_eq
-            lon0 = float(p["longitude_of_projection_origin"])
-            x = ds["x"].values.astype("float64")
-            y = ds["y"].values.astype("float64")
-
-            lin, col, ok = _reprojetar_geos_para_latlon(x, y, lon0, H, r_eq, r_pol)
-
-            # Lê só o "retângulo" do disco que interessa (bem menos dados do S3)
-            r0, r1 = lin[ok].min(), lin[ok].max() + 1
-            c0, c1 = col[ok].min(), col[ok].max() + 1
-            pedaco = ds["CMI"].isel(y=slice(r0, r1), x=slice(c0, c1)).values
-
-        tc = np.full(lin.shape, np.nan)
-        tc[ok] = pedaco[lin[ok] - r0, col[ok] - c0] - 273.15   # Kelvin -> °C
-        rgba = _colorir_ir(np.nan_to_num(tc, nan=99.0))
-        rgba[np.isnan(tc), 3] = 0
-
-        buf = io.BytesIO()
-        Image.fromarray(rgba, "RGBA").save(buf, format="PNG", optimize=True)
-        img_b64 = base64.b64encode(buf.getvalue()).decode()
-
-        bounds = [[LAT_MIN, LON_MIN], [LAT_MAX, LON_MAX]]
-        # hora da imagem, tirada do nome do arquivo: ..._s20262711820...
-        hora = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})", ultimo)
-        carimbo = f"{hora[1]} dia {hora[2]} {hora[3]}:{hora[4]}Z" if hora else "?"
-        return f"data:image/png;base64,{img_b64}", bounds, carimbo
-
-    except Exception as e:
-        st.sidebar.error(f"Erro no processamento GOES-19: {e}")
-        return None, None, None
-
-# --- FUNÇÕES DE APOIO ---
-def sigmet_to_decimal(texto):
-    padrao = r"([NS])(\d{2})(\d{2})\s([WE])(\d{3})(\d{2})"
-    matches = re.findall(padrao, texto)
-    return [
-        [
-            -(int(m[1]) + int(m[2]) / 60) if m[0] == "S" else (int(m[1]) + int(m[2]) / 60),
-            -(int(m[4]) + int(m[5]) / 60) if m[3] == "W" else (int(m[4]) + int(m[5]) / 60),
-        ]
-        for m in matches
-    ]
+        components.html(m.get_root().render(), height=altura)
+    except Exception:
+        from streamlit_folium import st_folium
+        st_folium(m, height=altura, use_container_width=True, returned_objects=[])
 
 
-def get_sigmet_color(msg):
-    msg = msg.upper()
-    if "TS" in msg:
-        return "red"
-    if "ICE" in msg:
-        return "skyblue"
-    if "TURB" in msg:
-        return "yellow"
-    return "orange"
+# ============================================================================
+# MENU
+# ============================================================================
+st.sidebar.title("✈️ Meteorologia Aeronáutica")
+aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em tempo real", "📺 Aulas e simuladores", "📚 Materiais e links"],
+                       label_visibility="collapsed")
 
+# ============================================================================
+# ABA 1 — BRIEFING
+# ============================================================================
+if aba.startswith("🛰️"):
+    # ---------------- barra lateral ----------------
+    st.sidebar.subheader("📡 Camadas")
+    ver_ir = st.sidebar.checkbox("Satélite infravermelho (GOES-19 canal 13)", value=True)
+    ver_vis = st.sidebar.checkbox("Satélite visível (GOES-19 canal 2)", value=False,
+                                  help="Só mostra nuvens durante o dia.")
+    ver_sigmet = st.sidebar.checkbox("SIGMET", value=True)
+    ver_ads = st.sidebar.checkbox("Aeródromos das capitais", value=True)
+    estilo = st.sidebar.radio("Mostrar aeródromos como", ["Etiquetas VFR/IFR (FAA)", "Bolinhas (cores REDEMET)"],
+                              disabled=not ver_ads)
+    estilo = "FAA" if estilo.startswith("Etiquetas") else "REDEMET"
 
-NIVEIS_MAP = {
-    "SFC": 1000,
-    "FL050": 850,
-    "FL080": 750,
-    "FL100": 700,
-    "FL120": 600,
-    "FL140": 600,
-    "FL180": 500,
-    "FL220": 400,
-    "FL240": 400,
-    "FL260": 350,
-    "FL300": 300,
-    "FL340": 250,
-    "FL360": 225,
-    "FL410": 200,
-}
+    ver_modelo = st.sidebar.checkbox("Modelo GFS (vento, temperatura)", value=False)
+    if ver_modelo:
+        chave_var = st.sidebar.selectbox("Variável", list(gfs.VARIAVEIS),
+                                         format_func=lambda k: gfs.VARIAVEIS[k]["nome"])
+        # temperatura só existe nos níveis de pressão (a de superfície fica para depois)
+        niveis = [r for r, (tipo, _) in gfs.NIVEIS.items()
+                  if tipo == "iso" or gfs.VARIAVEIS[chave_var]["tipo"] == "vetor"]
+        rotulo_nivel = st.sidebar.selectbox("Nível", niveis, index=niveis.index("FL180 · 500 hPa"))
+        horas = st.sidebar.select_slider("Validade", options=[0, 3, 6, 9, 12, 18, 24],
+                                         format_func=lambda h: "agora" if h == 0 else f"+{h} h")
 
+    with st.sidebar.expander("🗺️ Cartas ENRC (DECEA)"):
+        cartas = (st.multiselect("Cartas de baixa (L)", [f"L{i}" for i in range(1, 10)]) +
+                  st.multiselect("Cartas de alta (H)", [f"H{i}" for i in range(1, 10)]))
 
-@st.cache_resource(ttl=3600)
-def carregar_dados_gfs(fl_alvo):
-    try:
-        pressao = NIVEIS_MAP.get(fl_alvo, 500)
-        url = f"https://api.open-meteo.com/v1/gfs?latitude=-15.78&longitude=-47.93&hourly=temperature_{pressao}hPa,windspeed_{pressao}hPa,winddirection_{pressao}hPa&forecast_days=1"
-        r = requests.get(url)
-        if r.status_code != 200:
-            return None, "Erro na API"
-
-        response = r.json()
-        dados_processados = {
-            "temp_media_c": response["hourly"][f"temperature_{pressao}hPa"][0],
-            "wind_spd": response["hourly"][f"windspeed_{pressao}hPa"][0],
-            "wind_dir": response["hourly"][f"winddirection_{pressao}hPa"][0],
-            "rodada": "GFS via Open-Meteo (Real-time)",
-        }
-        return dados_processados, dados_processados["rodada"]
-    except Exception as e:
-        return None, str(e)
-
-
-# --- MENU LATERAL ---
-st.sidebar.title("✈️ Menu de Navegação")
-aba = st.sidebar.radio(
-    "Ir para:",
-    [
-        "🛰️ Briefing em Tempo Real",
-        "🚀 Modelo GFS (Vento/Gelo)",
-        "📺 Aulas em Vídeo",
-        "📚 Materiais e Links",
-    ],
-)
-
-if aba == "🛰️ Briefing em Tempo Real":
-    st.sidebar.subheader("📍 Planejamento de Voo")
-    lista_ads = [
-        "SBGR",
-        "SBSP",
-        "SBKP",
-        "SBGL",
-        "SBRJ",
-        "SBRF",
-        "SBPA",
-        "SBCT",
-        "SBBR",
-        "SBBH",
-    ]
-    origem = st.sidebar.selectbox("Origem", lista_ads, index=0)
-    destino = st.sidebar.selectbox("Destino", lista_ads, index=8)
-    alternativa = st.sidebar.selectbox("Alternativa", lista_ads, index=9)
-
-    st.sidebar.subheader("📡 Camadas Ativas")
-    show_goes_ir = st.sidebar.checkbox("Exibir Satélite GOES-19 (NetCDF NOAA)", value=True)
-    show_sigmet = st.sidebar.checkbox("Exibir SIGMETs", value=True)
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🗺️ Seleção de Cartas ENRC")
-    cartas_baixa_sel = st.sidebar.multiselect("Cartas de Baixa (L)", [f"L{i}" for i in range(1, 10)])
-    cartas_alta_sel = st.sidebar.multiselect("Cartas de Alta (H)", [f"H{i}" for i in range(1, 10)])
-
-    st.title(f"🛰️ Briefing Operacional: {origem} ✈️ {destino}")
-
-    # 1. Inicialização do Mapa
-    m = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles=None)
-
-    # Camadas de Fundo Cartográfico
-    folium.TileLayer("CartoDB dark_matter", name="Mapa Escuro (Matrix)", overlay=False).add_to(m)
-    folium.TileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri Satellite",
-        name="Satélite (Google Earth)",
-        overlay=False,
-    ).add_to(m)
-
-    # 2. Cartas ENRC Selecionadas
-    for carta in cartas_baixa_sel:
-        folium.WmsTileLayer(
-            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-            layers=f"ICA:ENRC_{carta}",
-            fmt="image/png",
-            transparent=True,
-            name=f"Carta {carta}",
-            overlay=True,
-            show=True,
-        ).add_to(m)
-
-    for carta in cartas_alta_sel:
-        folium.WmsTileLayer(
-            url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms",
-            layers=f"ICA:ENRC_{carta}",
-            fmt="image/png",
-            transparent=True,
-            name=f"Carta {carta}",
-            overlay=True,
-            show=True,
-        ).add_to(m)
-
-    # 3. CAMADA OVERLAY GOES-19 (NETCDF4 REAL-TIME S3)
-    if show_goes_ir:
-        with st.spinner("Conectando ao S3 da NOAA e extraindo NetCDF do GOES-19..."):
-            img_url, img_bounds, carimbo = carregar_goes19_overlay()
-            if img_url and img_bounds:
-                folium.raster_layers.ImageOverlay(
-                    image=img_url,
-                    bounds=img_bounds,
-                    opacity=0.85,
-                    name=f"GOES-19 IR C13 ({carimbo})",
-                    interactive=False,
-                ).add_to(m)
-                st.caption(f"🛰️ GOES-19 Canal 13 (IR) — imagem das {carimbo}")
-            else:
-                st.warning("Não foi possível obter a imagem GOES-19 agora.")
-
-    # 4. SIGMETs
-    if show_sigmet:
-        try:
-            s_res = requests.get(f"https://api-redemet.decea.mil.br/mensagens/sigmet?api_key={api_key}").json()
-            for s in s_res.get("data", {}).get("data", []):
-                pts = sigmet_to_decimal(s["mens"])
-                if len(pts) >= 3:
-                    folium.Polygon(
-                        locations=pts,
-                        color=get_sigmet_color(s["mens"]),
-                        fill=True,
-                        fill_opacity=0.3,
-                        popup=s["mens"],
-                    ).add_to(m)
-        except Exception:
-            pass
-
-    # 5. Marcadores e Rota
-    COORDS = {
-        "SBGR": [-23.432, -46.470],
-        "SBGL": [-22.810, -43.250],
-        "SBSP": [-23.626, -46.656],
-        "SBRJ": [-22.910, -43.162],
-        "SBRF": [-8.126, -34.923],
-        "SBKP": [-23.007, -47.134],
-        "SBPA": [-29.994, -51.171],
-        "SBCT": [-25.531, -49.175],
-        "SBBR": [-15.869, -47.917],
-        "SBBH": [-19.624, -43.898],
-    }
-
-    dados_missao = []
-    for icao in list(dict.fromkeys([origem, destino, alternativa])):
-        try:
-            m_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/metar/{icao}?api_key={api_key}").json()
-            t_dat = requests.get(f"https://api-redemet.decea.mil.br/mensagens/taf/{icao}?api_key={api_key}").json()
-            metar = m_dat["data"]["data"][0]["mens"]
-            taf = t_dat["data"]["data"][0]["mens"]
-            dados_missao.append({"ICAO": icao, "METAR": metar, "TAF": taf})
-
-            cor = "blue" if icao in [origem, destino] else "purple"
-            folium.Marker(
-                COORDS[icao],
-                popup=f"<b>{icao}</b>",
-                icon=folium.Icon(color=cor, icon="plane", prefix="fa"),
-            ).add_to(m)
-        except Exception:
-            continue
-
-    folium.PolyLine([COORDS[origem], COORDS[destino]], color="#00f2ff", weight=5).add_to(m)
-
-    # Controles
-    plugins.Fullscreen().add_to(m)
-    folium.LayerControl(position="topright").add_to(m)
-
-    st_folium(m, width="100%", height=600)
-
-    # Detalhamento METAR/TAF
-    st.subheader("🔍 Dados Meteorológicos da Rota")
-    cols = st.columns(3)
-    for i, dado in enumerate(dados_missao):
-        if i < 3:
-            with cols[i].expander(f"📍 {dado['ICAO']}", expanded=True):
-                st.markdown("**METAR:**")
-                st.code(dado["METAR"], language="fix")
-                st.markdown("**TAF:**")
-                st.code(dado["TAF"], language="fix")
-
-elif aba == "🚀 Modelo GFS (Vento/Gelo)":
-    st.title("🚀 Análise de Previsão Numérica - GFS")
-    fl_alvo = st.sidebar.selectbox("Selecione o FL para Análise:", list(NIVEIS_MAP.keys()))
-
-    with st.spinner(f"Buscando dados do {fl_alvo}..."):
-        ds, rodada_info = carregar_dados_gfs(fl_alvo)
-        if ds:
-            st.success(f"Dados carregados para o {fl_alvo}")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Temperatura", f"{ds['temp_media_c']:.1f} °C")
-            c2.metric("Vento (Velocidade)", f"{ds['wind_spd']:.0f} km/h")
-            c3.metric("Vento (Direção)", f"{ds['wind_dir']:.0f}°")
-
-            if ds["temp_media_c"] < 0 and fl_alvo != "SFC":
-                st.warning("❄️ Risco de Gelo: Nível acima da Isoterma de 0°C.")
-
-            m_gfs = folium.Map(location=[-15.0, -58.0], zoom_start=4, tiles="CartoDB dark_matter")
-            st_folium(m_gfs, width="100%", height=600)
+    # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
+    st.sidebar.subheader("📍 Planejamento de voo")
+    with st.sidebar.form("planejamento"):
+        opcoes = ad.LISTA_ICAO
+        origem = st.selectbox("Origem", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
+        destino = st.selectbox("Destino", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
+        altn = st.selectbox("Alternativa (opcional)", opcoes, index=None, placeholder="Escolha...",
+                            format_func=ad.rotulo)
+        planejar = st.form_submit_button("✈️ Planejar voo", type="primary")
+    if planejar:
+        if origem and destino:
+            st.session_state["plano"] = [origem, destino, altn]
         else:
-            st.error("Falha na comunicação com o provedor GFS. Tente outro FL.")
+            st.sidebar.warning("Escolha pelo menos origem e destino.")
+    if st.session_state.get("plano") and st.sidebar.button("Limpar planejamento"):
+        del st.session_state["plano"]
+        st.rerun()
+    plano = st.session_state.get("plano")
 
-elif aba == "📺 Aulas em Vídeo":
-    st.title("📺 Centro de Treinamento")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("🎥 Aula 1: Altimetria - Ajuste: QNH / QNE")
+    # ---------------- título ----------------
+    if plano:
+        st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else ""))
+    else:
+        st.title("🛰️ Briefing operacional")
+
+    avisos, chips = [], []
+
+    # ---------------- mapa ----------------
+    m = folium.Map(location=[-15.0, -55.0], zoom_start=4, tiles=None, control_scale=True)
+    m.get_root().header.add_child(folium.Element(cm.CSS_MAPA))
+    cm.adicionar_mapas_fundo(m)
+
+    for carta in cartas:
+        folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=f"ICA:ENRC_{carta}",
+                            fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True).add_to(m)
+
+    with st.spinner("Carregando satélite, mensagens e modelo..."):
+        for canal, ligado, nome in (("IR", ver_ir, "GOES-19 IR (canal 13)"), ("VIS", ver_vis, "GOES-19 visível (canal 2)")):
+            if not ligado:
+                continue
+            try:
+                url_img, limites, instante = goes(canal)
+                folium.raster_layers.ImageOverlay(url_img, bounds=limites, opacity=0.85 if canal == "IR" else 0.95,
+                                                  name=f"{nome} {fmt_z(instante)}", interactive=False).add_to(m)
+                idade = int((datetime.now(timezone.utc) - instante).total_seconds() // 60)
+                chips.append((f"{nome}: {fmt_z(instante)} (há {idade} min)", idade > 30))
+            except Exception as e:
+                avisos.append(f"{nome} indisponível agora ({e}).")
+
+        if ver_modelo:
+            try:
+                hora_cheia = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+                dados, info = modelo(horas, hora_cheia)
+                var = gfs.VARIAVEIS[chave_var]
+                grade = gfs.grade_para_mapa(dados, rotulo_nivel, chave_var)
+                titulo = f"{var['nome'].split(' (')[0]} {rotulo_nivel.split(' · ')[0]}"
+                cm.CamadaModelo(grade, chave_var, var["tipo"], var["unidade"], titulo,
+                                name=f"GFS {titulo}").add_to(m)
+                chips.append((f"GFS {info['run']:%d/%H}Z +{info['fhora']}h → válido {fmt_z(info['valido'])}", False))
+            except Exception as e:
+                avisos.append(f"Modelo GFS indisponível agora ({e}).")
+
+        nao_desenhados = []
+        if ver_sigmet:
+            textos, erro = lista_sigmets(api_key)
+            if erro:
+                avisos.append(erro)
+            else:
+                nao_desenhados = cm.adicionar_sigmets(m, textos)
+                chips.append((f"{len(textos)} SIGMET vigente(s)", False))
+
+        metars, tafs, erros = metars_e_tafs(api_key)
+        avisos += erros
+        if ver_ads:
+            cm.adicionar_aerodromos(m, metars, tafs, estilo)
+            cm.Legenda(cm.legenda_categorias(estilo), "bottomright").add_to(m)
+
+    if plano:
+        pts = [ad.COORDS[plano[0]], ad.COORDS[plano[1]]]
+        folium.PolyLine(pts, color="#00f2ff", weight=4, opacity=0.9, tooltip="Rota").add_to(m)
+        if plano[2]:
+            folium.PolyLine([ad.COORDS[plano[1]], ad.COORDS[plano[2]]], color="#c77dff", weight=3,
+                            dash_array="6 6", tooltip="Para a alternativa").add_to(m)
+        m.fit_bounds([ad.COORDS[i] for i in plano if i], padding=(60, 60))
+
+    plugins.Fullscreen().add_to(m)
+    folium.LayerControl(position="topright", collapsed=True).add_to(m)
+
+    # Linha de "chips" com a situação de cada fonte + avisos visíveis
+    st.markdown("<div class='chips'>" + "".join(
+        f"<span class='chip{' alerta' if alerta else ''}'>{html.escape(t)}</span>" for t, alerta in chips) +
+        "</div>", unsafe_allow_html=True)
+    for a in avisos:
+        st.warning(a, icon="⚠️")
+
+    mostrar_mapa(m, altura=640)
+    st.caption("Passe o mouse sobre um aeródromo para ver METAR e TAF. Use o botão de camadas "
+               "(canto superior direito) para ligar e desligar camadas e trocar o mapa de fundo. "
+               "Ferramenta de apoio ao estudo: não substitui o briefing meteorológico oficial.")
+
+    if nao_desenhados:
+        with st.expander(f"SIGMET sem polígono desenhável ({len(nao_desenhados)})"):
+            for t in nao_desenhados:
+                st.markdown(f"<div class='msg'>{html.escape(t)}</div>", unsafe_allow_html=True)
+
+    # ---------------- METAR / TAF da rota ----------------
+    if plano:
+        st.subheader("🔍 Dados meteorológicos da rota")
+        papeis = ["Origem", "Destino", "Alternativa"]
+        cols = st.columns(3)
+        for col, papel, icao in zip(cols, papeis, plano):
+            if not icao:
+                continue
+            metar = (metars.get(icao) or {}).get("mens", "")
+            taf = (tafs.get(icao) or {}).get("mens", "")
+            info = mt.analisar(metar) if metar else None
+            cat = info["faa"] if info else "ND"
+            texto, fundo, cor = mt.CATEGORIAS_FAA[cat]
+            idade = f" · há {info['idade_min']} min" if info and info["idade_min"] is not None else ""
+            with col:
+                st.markdown(
+                    f"<div class='cartao-titulo'>{papel}: {icao}"
+                    f"<span class='cat-chip' style='background:{fundo};color:{cor}'>{texto}</span></div>"
+                    f"<div class='rotulo'>{html.escape(ad.NOMES.get(icao, ''))}{idade}</div>"
+                    f"<div class='rotulo'>METAR</div><div class='msg'>{html.escape(metar or 'não disponível')}</div>"
+                    f"<div class='rotulo'>TAF</div><div class='msg taf'>"
+                    f"{html.escape(mt.formatar_taf(taf) if taf else 'não disponível')}</div>",
+                    unsafe_allow_html=True)
+    else:
+        st.info("Escolha origem, destino e alternativa na barra lateral e clique em **Planejar voo** "
+                "para ver a rota e os METAR/TAF completos aqui embaixo.", icon="🧭")
+
+# ============================================================================
+# ABA 2 — AULAS E SIMULADORES
+# ============================================================================
+elif aba.startswith("📺"):
+    st.title("📺 Centro de treinamento")
+    st.subheader("Aulas em vídeo")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Aula 1: Altimetria — ajustes QNH / QNE**")
         st.video("https://www.youtube.com/watch?v=Y_91K9CBaRg")
-    with col2:
-        st.subheader("🎥 Aula 2: Satélite, SIGMET e GELO")
+    with c2:
+        st.markdown("**Aula 2: Satélite, SIGMET e gelo**")
         st.video("https://www.youtube.com/watch?v=KoyZS3iCeM0")
 
-elif aba == "📚 Materiais e Links":
-    st.title("📚 Biblioteca Digital")
-    st.markdown(
-        """
-    ### 📖 Manuais Oficiais
-    - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
-    - [ICA 105-16/2025 (Códigos Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
-    - [ICA 105-17/2025 (Manual de Centros Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
-    ### 🔗 Links Úteis
-    - [REDEMET](https://redemet.decea.mil.br/)
-    - [AISWEB](https://aisweb.decea.mil.br/)
-    - [AVIATION WEATHER CENTER](https://aviationweather.gov/)
-    """
-    )
+    st.subheader("Simuladores interativos")
+    pasta = Path(__file__).parent / "simuladores"
+    arquivos = sorted(pasta.glob("*.html"))
+    if arquivos:
+        escolhido = st.selectbox("Escolha o simulador", arquivos, format_func=lambda p: p.stem.replace("_", " "))
+        components.html(escolhido.read_text(encoding="utf-8"), height=820, scrolling=True)
+    else:
+        st.info("Em breve. Para publicar um simulador, coloque o arquivo .html na pasta "
+                "'simuladores' do repositório: ele aparece aqui automaticamente.", icon="🧪")
+
+# ============================================================================
+# ABA 3 — MATERIAIS
+# ============================================================================
+else:
+    st.title("📚 Biblioteca digital")
+    st.markdown("""
+### 📖 Manuais oficiais
+- [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
+- [ICA 105-16/2025 (Códigos Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-16)
+- [ICA 105-17/2025 (Manual de Centros Meteorológicos)](https://publicacoes.decea.mil.br/publicacao/ica-105-17)
+### 🔗 Links úteis
+- [REDEMET](https://redemet.decea.mil.br/)
+- [AISWEB](https://aisweb.decea.mil.br/)
+- [Aviation Weather Center](https://aviationweather.gov/)
+### 🛰️ Fontes de dados deste site
+- Satélite: NOAA GOES-19 (canais 13 e 2), processado por este site
+- Modelo: NOAA GFS 0,25° (servidor NOMADS)
+- METAR, TAF e SIGMET: API REDEMET (DECEA)
+- Mapas de fundo: Esri, OpenStreetMap, OpenTopoMap
+""")

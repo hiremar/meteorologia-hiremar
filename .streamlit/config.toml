@@ -1,0 +1,7 @@
+# Tema do site (cores de fundo, texto e destaque). Mudou aqui, muda o site todo.
+[theme]
+base = "dark"
+primaryColor = "#f1c40f"             # amarelo de destaque (botões, seleção)
+backgroundColor = "#0b1a27"          # azul-marinho do fundo
+secondaryBackgroundColor = "#13263a" # barra lateral e caixas
+textColor = "#e8eef3"
