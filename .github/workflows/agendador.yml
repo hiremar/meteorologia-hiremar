@@ -27,5 +27,6 @@ jobs:
       - name: Executar Script Python
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          REDEMET_KEY: ${{ secrets.REDEMET_KEY }}
         run: |
           python script_opmet.py
