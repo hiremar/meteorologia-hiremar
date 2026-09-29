@@ -32,8 +32,8 @@ MESES = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN',
          'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ']
 
 PRESSAO_MIN, PRESSAO_MAX = 900, 1060      # limites de QNH aceitos (hPa)
-VARIACAO_MAX_TEMP = 8                     # °C em até 1 h
-VARIACAO_MAX_QNH = 5                      # hPa em até 1 h
+VARIACAO_MAX_TEMP = 10                     # °C em até 1 h
+VARIACAO_MAX_QNH = 6                      # hPa em até 1 h
 JANELA_COMPARACAO = timedelta(hours=1)
 
 AERO_RVR_OBRIGATORIO = ['SBGR', 'SBSP', 'SBSJ', 'SBGL', 'SBKP']
