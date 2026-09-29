@@ -6,7 +6,7 @@ Se deu errado, 'erro' traz um texto curto que o site mostra na tela
 "não há SIGMET" com "não consegui consultar".
 """
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 
@@ -18,29 +18,44 @@ def _agora_z():
     return datetime.now(timezone.utc).strftime("%H:%MZ")
 
 
+class RecusaAPI(Exception):
+    """A REDEMET respondeu, mas recusou o pedido (status false)."""
+
+
+def _motivo(e):
+    """Texto seguro para mostrar na tela. Erros de conexão do 'requests' trazem
+    o endereço completo, COM a chave dentro: por isso mostramos só o tipo do erro."""
+    if isinstance(e, RecusaAPI):
+        return str(e)
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return f"HTTP {e.response.status_code}"
+    return type(e).__name__
+
+
 def _pedir(caminho, api_key, extras=None):
     """Faz o pedido e devolve a lista de mensagens (o 'data' de dentro do 'data')."""
     params = {"api_key": api_key, **(extras or {})}
     r = requests.get(f"{URL}/{caminho}", params=params, timeout=TIMEOUT)
     r.raise_for_status()                      # erro HTTP (401, 500...) vira exceção
-    return (r.json().get("data") or {}).get("data") or []
+    js = r.json()
+    # A REDEMET às vezes responde "HTTP 200" mas com status false e um recado
+    # (ex.: "Tamanho da página maior que a permitida!!!"). Isso também é erro.
+    if js.get("status") is False:
+        raise RecusaAPI(str(js.get("message", "recusado pela API"))[:120])
+    return (js.get("data") or {}).get("data") or []
 
 
-def ultima_por_localidade(tipo, icaos, api_key, horas_atras=None):
+def ultima_por_localidade(tipo, icaos, api_key):
     """Busca METAR ou TAF de várias localidades numa chamada só
-    (a REDEMET aceita 'SBGR,SBBR,SBPA' separado por vírgula)
-    e fica com a mensagem mais recente de cada uma.
+    (a REDEMET aceita 'SBGR,SBBR,SBPA' separado por vírgula).
+    Sem datas no pedido, a API já devolve a mensagem mais recente de cada uma.
+    (Não use page_tam acima de 150: a API recusa.)
 
     tipo: "metar" ou "taf".   Retorna ({"SBGR": {...}, ...}, erro)."""
-    extras = {"page_tam": 500}
-    if horas_atras:
-        agora = datetime.now(timezone.utc)
-        extras["data_ini"] = (agora - timedelta(hours=horas_atras)).strftime("%Y%m%d%H")
-        extras["data_fim"] = agora.strftime("%Y%m%d%H")
     try:
-        itens = _pedir(f"{tipo}/{','.join(icaos)}", api_key, extras)
+        itens = _pedir(f"{tipo}/{','.join(icaos)}", api_key)
     except Exception as e:
-        return {}, f"{tipo.upper()} indisponível às {_agora_z()} ({type(e).__name__})"
+        return {}, f"{tipo.upper()} indisponível às {_agora_z()} ({_motivo(e)})"
 
     ultimas = {}
     for item in itens:
@@ -58,7 +73,7 @@ def sigmets(api_key):
         itens = _pedir("sigmet", api_key)
         return [i.get("mens", "") for i in itens if i.get("mens")], None
     except Exception as e:
-        return [], f"SIGMET indisponível às {_agora_z()} ({type(e).__name__})"
+        return [], f"SIGMET indisponível às {_agora_z()} ({_motivo(e)})"
 
 
 # ----------------------------------------------------------------------------

@@ -63,7 +63,7 @@ def goes(canal):
 
 @st.cache_data(ttl=300, show_spinner=False)          # 5 min
 def metars_e_tafs(chave):
-    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave, horas_atras=3)
+    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
     tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_ICAO, chave)
     return metars, tafs, [e for e in (e1, e2) if e]
 
