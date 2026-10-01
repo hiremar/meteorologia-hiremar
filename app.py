@@ -25,6 +25,10 @@ st.set_page_config(layout="wide", page_title="Meteorologia Aeronáutica · Prof.
 st.markdown("""
 <style>
   h1, h2, h3 { color: #f1c40f !important; }
+  h1 { font-size: 2rem !important; }            /* título da página menor (antes ~2.75rem) */
+  .aviso { display:flex; align-items:center; gap:10px; margin:2px 0 12px;
+           color:#ffb347; font-size:.85rem; line-height:1.35; }
+  .aviso svg { flex:none; }
   .block-container { padding-top: 2.2rem; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin:-4px 0 10px; }
   .chip { background:#13263a; border:1px solid #24445f; color:#c9d3dc; border-radius:999px;
@@ -40,6 +44,21 @@ st.markdown("""
   .rotulo { color:#9fb3c4; font-size:.8rem; margin-top:4px; }
 </style>
 """, unsafe_allow_html=True)
+
+# Aviso fixo de "material de instrução": triângulo laranja com bordas arredondadas.
+# É um desenho SVG: stroke-linejoin="round" é o que arredonda as pontas do triângulo.
+def aviso_instrucao():
+    st.markdown(
+        '<div class="aviso">'
+        '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#ff9800" '
+        'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>'
+        '<line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        '<span><b>Material de instrução.</b> Não substitui as fontes oficiais '
+        '(REDEMET, AISWEB, NOTAM) nem o briefing meteorológico oficial. '
+        'Não utilizar para planejamento ou decisão operacional real.</span>'
+        '</div>', unsafe_allow_html=True)
+
 
 # --- Chave da REDEMET (fica nos "Secrets" do Streamlit, nunca no código) ---
 try:
@@ -156,6 +175,7 @@ if aba.startswith("🛰️"):
         st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else ""))
     else:
         st.title("🛰️ Briefing operacional")
+    aviso_instrucao()
 
     avisos, chips = [], []
 
@@ -229,8 +249,7 @@ if aba.startswith("🛰️"):
 
     mostrar_mapa(m, altura=640)
     st.caption("Passe o mouse sobre um aeródromo para ver METAR e TAF. Use o botão de camadas "
-               "(canto superior direito) para ligar e desligar camadas e trocar o mapa de fundo. "
-               "Ferramenta de apoio ao estudo: não substitui o briefing meteorológico oficial.")
+               "(canto superior direito) para ligar e desligar camadas e trocar o mapa de fundo.")
 
     if nao_desenhados:
         with st.expander(f"SIGMET sem polígono desenhável ({len(nao_desenhados)})"):
@@ -269,6 +288,7 @@ if aba.startswith("🛰️"):
 # ============================================================================
 elif aba.startswith("📺"):
     st.title("📺 Centro de treinamento")
+    aviso_instrucao()
     st.subheader("Aulas em vídeo")
     c1, c2 = st.columns(2)
     with c1:
@@ -293,6 +313,7 @@ elif aba.startswith("📺"):
 # ============================================================================
 else:
     st.title("📚 Biblioteca digital")
+    aviso_instrucao()
     st.markdown("""
 ### 📖 Manuais oficiais
 - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)
