@@ -22,13 +22,23 @@ AEROPORTOS = [
 ]
 PASTA_DRIVE_NOME = "CONSISTENCIA"  # Nome exato da pasta no Drive
 
-# Define o nome da planilha do mês atual dinamicamente (ex: SET2026 CONSISTÊNCIA.xlsx)
-hoje = datetime.datetime.now(datetime.timezone.utc)
+# Quantas vezes repetir uma chamada ao Google Drive quando ele responde com erro
+# passageiro (ex.: 503 "Service Unavailable", que derrubou a rodada de 01/10/2026).
+# A biblioteca do Google espera um pouco mais a cada tentativa (1s, 2s, 4s, ...).
+TENTATIVAS_DRIVE = 6
+
 MESES_PT = {
     1: 'JAN', 2: 'FEV', 3: 'MAR', 4: 'ABR', 5: 'MAI', 6: 'JUN',
     7: 'JUL', 8: 'AGO', 9: 'SET', 10: 'OUT', 11: 'NOV', 12: 'DEZ'
 }
-NOME_PLANILHA = f"{MESES_PT[hoje.month]}{hoje.year} CONSISTÊNCIA.xlsx"
+
+
+def nome_planilha(ano, mes):
+    """Monta o nome da planilha de um mês. Ex.: (2026, 9) -> 'SET2026 CONSISTÊNCIA.xlsx'"""
+    return f"{MESES_PT[mes]}{ano} CONSISTÊNCIA.xlsx"
+
+
+hoje = datetime.datetime.now(datetime.timezone.utc)
 
 # Busca os últimos 4 dias para garantir atualização sem perder mensagens
 data_fim_dt = hoje
@@ -36,7 +46,7 @@ data_ini_dt = hoje - datetime.timedelta(days=4)
 DATA_INICIO = data_ini_dt.strftime('%Y%m%d')
 DATA_FIM = data_fim_dt.strftime('%Y%m%d')
 
-print(f"🚀 Iniciando Automação OPMET para a planilha: '{NOME_PLANILHA}'")
+print("🚀 Iniciando Automação OPMET")
 print(f"📅 Período de busca REDEMET: {DATA_INICIO} até {DATA_FIM}")
 
 # --- 2. AUTENTICAÇÃO COM GOOGLE DRIVE ---
@@ -44,11 +54,11 @@ sa_info = json.loads(os.environ['GCP_SA_KEY'])
 creds = service_account.Credentials.from_service_account_info(
     sa_info, scopes=['https://www.googleapis.com/auth/drive']
 )
-drive_service = build('drive', 'v3', credentials=creds)
+drive_service = build('drive', 'v3', credentials=creds, cache_discovery=False)
 
 # Localiza a pasta no Google Drive
 query = f"name = '{PASTA_DRIVE_NOME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-response = drive_service.files().list(q=query, fields="files(id, name)").execute()
+response = drive_service.files().list(q=query, fields="files(id, name)").execute(num_retries=TENTATIVAS_DRIVE)
 folders = response.get('files', [])
 
 if not folders:
@@ -56,116 +66,168 @@ if not folders:
 
 folder_id = folders[0]['id']
 
-# --- 3. VERIFICA SE A PLANILHA MESTRE DO MÊS EXISTE NO DRIVE ---
-query_file = f"name = '{NOME_PLANILHA}' and '{folder_id}' in parents and trashed = false"
-file_response = drive_service.files().list(q=query_file, fields="files(id, name)").execute()
-files_found = file_response.get('files', [])
 
-abas_consolidadas = {}
-file_id_existente = None
+# --- 3. CONSULTA API REDEMET (primeiro baixa tudo, depois decide para qual planilha vai) ---
+# Antes, o script jogava fora as mensagens que não eram do mês de "hoje".
+# Isso fazia perder o fim do último dia do mês: no dia 01/10 a busca trazia o
+# dia 30/09 completo, mas ele era descartado porque o script só olhava a
+# planilha de OUTUBRO. Agora guardamos TUDO e, no passo 4, cada mensagem vai
+# para a planilha do mês dela (30/09 -> SET2026, 01/10 -> OUT2026).
+novas_por_aero = {}  # ex.: {'SBGR': DataFrame com DATA_HORA_UTC e MENSAGEM}
 
-if files_found:
-    file_id_existente = files_found[0]['id']
-    request = drive_service.files().get_media(fileId=file_id_existente)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    xls_mestre = pd.ExcelFile(fh)
-    for sheet in xls_mestre.sheet_names:
-        abas_consolidadas[sheet] = pd.read_excel(xls_mestre, sheet_name=sheet)
-    print(f"✅ Planilha existente '{NOME_PLANILHA}' baixada ({len(abas_consolidadas)} abas).")
-else:
-    print(f"ℹ️ Planilha '{NOME_PLANILHA}' não encontrada no Drive. Uma nova será criada.")
-
-# --- 4. CONSULTA API REDEMET ---
 for aero in AEROPORTOS:
     aero_upper = aero.upper()
     url = f"https://api-redemet.decea.mil.br/mensagens/metar/{aero}?api_key={API_KEY}&data_ini={DATA_INICIO}00&data_fim={DATA_FIM}23"
 
-    try:
-        resp = requests.get(url)
-        data = resp.json()
-        mensagens_lista = []
+    # A REDEMET às vezes também falha por instantes; tentamos até 3 vezes.
+    data = None
+    for tentativa in range(1, 4):
+        try:
+            resp = requests.get(url, timeout=60)
+            data = resp.json()
+            break
+        except Exception as e:
+            print(f"⚠️ {aero_upper}: tentativa {tentativa} falhou ({e})")
+            time.sleep(5 * tentativa)
 
-        if data.get('status') and data.get('data') and data['data'].get('data'):
-            for item in data['data']['data']:
-                msg = item.get('mens', '')
-                dt = item.get('validade_inicial', '')
+    if data is None:
+        print(f"❌ Erro ao consultar {aero_upper}: REDEMET não respondeu após 3 tentativas.")
+        continue
 
-                if ("METAR" in msg or "SPECI" in msg) and ("AUTO" not in msg) and ("não localizada" not in msg.lower()):
-                    mensagens_lista.append({'DATA_HORA_UTC': dt, 'MENSAGEM': msg})
+    mensagens_lista = []
+    if data.get('status') and data.get('data') and data['data'].get('data'):
+        for item in data['data']['data']:
+            msg = item.get('mens', '')
+            dt = item.get('validade_inicial', '')
 
-        if mensagens_lista:
-            df_novos = pd.DataFrame(mensagens_lista)
+            if ("METAR" in msg or "SPECI" in msg) and ("AUTO" not in msg) and ("não localizada" not in msg.lower()):
+                mensagens_lista.append({'DATA_HORA_UTC': dt, 'MENSAGEM': msg})
 
-            # --- FILTRO DE MÊS (correção da virada de mês) ---
-            # A busca na REDEMET sempre traz os últimos 4 dias (T-4), então perto da
-            # virada do mês ela também traz mensagens do mês ANTERIOR (ex.: dia 01/10
-            # ainda traz mensagens de 27 a 30/09). Sem esse filtro, essas mensagens de
-            # setembro seriam gravadas de novo dentro da planilha de outubro (que já
-            # foram gravadas corretamente na planilha de setembro nos dias anteriores).
-            # Aqui a gente converte a data de cada mensagem e mantém só as que
-            # pertencem ao mesmo ano/mês em que o script está rodando hoje (`hoje`).
-            df_novos['DATA_HORA_DT'] = pd.to_datetime(df_novos['DATA_HORA_UTC'], errors='coerce')
-            df_novos = df_novos[
-                (df_novos['DATA_HORA_DT'].dt.year == hoje.year)
-                & (df_novos['DATA_HORA_DT'].dt.month == hoje.month)
-            ].drop(columns=['DATA_HORA_DT'])
-
-            if not df_novos.empty:
-                if aero_upper in abas_consolidadas:
-                    abas_consolidadas[aero_upper] = pd.concat([abas_consolidadas[aero_upper], df_novos], ignore_index=True)
-                else:
-                    abas_consolidadas[aero_upper] = df_novos
-
-    except Exception as e:
-        print(f"❌ Erro ao consultar {aero_upper}: {e}")
+    if mensagens_lista:
+        novas_por_aero[aero_upper] = pd.DataFrame(mensagens_lista)
 
     time.sleep(0.05)
 
-# --- 5. LIMPEZA E ORDENAÇÃO ---
-for aba, df in abas_consolidadas.items():
-    if df.empty:
+# Descobre quais meses apareceram nos dados baixados (normalmente 1; na virada
+# do mês, 2 — por exemplo setembro E outubro).
+meses_encontrados = set()
+for df in novas_por_aero.values():
+    datas = pd.to_datetime(df['DATA_HORA_UTC'], errors='coerce').dropna()
+    meses_encontrados.update(zip(datas.dt.year, datas.dt.month))
+
+# Inclui sempre o mês corrente, para a planilha do mês novo ser criada
+# automaticamente assim que chegar a primeira mensagem dele.
+meses_encontrados.add((hoje.year, hoje.month))
+
+
+# --- 4. FUNÇÕES DE APOIO PARA O DRIVE ---
+def baixar_planilha(nome):
+    """Procura a planilha no Drive. Devolve (id_do_arquivo, {aba: DataFrame}).
+    Se não existir, devolve (None, {})."""
+    q = f"name = '{nome}' and '{folder_id}' in parents and trashed = false"
+    achados = drive_service.files().list(q=q, fields="files(id, name)").execute(
+        num_retries=TENTATIVAS_DRIVE).get('files', [])
+    if not achados:
+        return None, {}
+
+    file_id = achados[0]['id']
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, drive_service.files().get_media(fileId=file_id))
+    done = False
+    while not done:
+        _, done = downloader.next_chunk(num_retries=TENTATIVAS_DRIVE)
+    fh.seek(0)
+    xls = pd.ExcelFile(fh)
+    abas = {sheet: pd.read_excel(xls, sheet_name=sheet) for sheet in xls.sheet_names}
+    return file_id, abas
+
+
+def salvar_planilha(nome, file_id, abas):
+    """Gera o .xlsx com a formatação padrão e envia ao Drive
+    (atualiza se já existe, cria se é nova)."""
+    output_buffer = io.BytesIO()
+    with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        format_wrap = workbook.add_format({'text_wrap': True, 'valign': 'top', 'border': 1})
+        format_header = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
+
+        # Abas na ordem da lista AEROPORTOS (e qualquer aba extra no fim)
+        ordem = [a.upper() for a in AEROPORTOS if a.upper() in abas]
+        ordem += [a for a in abas if a not in ordem]
+
+        for aba in ordem:
+            df = abas[aba]
+            cols = [c for c in ['DATA_HORA_UTC', 'MENSAGEM'] if c in df.columns]
+            df_salvar = df[cols] if cols else df
+            df_salvar.to_excel(writer, sheet_name=aba, index=False)
+
+            worksheet = writer.sheets[aba]
+            for col_num, value in enumerate(df_salvar.columns.values):
+                worksheet.write(0, col_num, value, format_header)
+            worksheet.set_column('A:A', 20, format_wrap)
+            worksheet.set_column('B:B', 150, format_wrap)
+
+    output_buffer.seek(0)
+    media = MediaIoBaseUpload(
+        output_buffer,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        resumable=True
+    )
+
+    if file_id:
+        drive_service.files().update(fileId=file_id, media_body=media).execute(num_retries=TENTATIVAS_DRIVE)
+        print(f"✨ Planilha '{nome}' atualizada com sucesso no Google Drive!")
+    else:
+        file_metadata = {'name': nome, 'parents': [folder_id]}
+        drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute(
+            num_retries=TENTATIVAS_DRIVE)
+        print(f"✨ Nova planilha '{nome}' criada com sucesso no Google Drive!")
+
+
+# --- 5. PARA CADA MÊS: BAIXA A PLANILHA, JUNTA AS NOVAS, LIMPA E SALVA ---
+for (ano, mes) in sorted(meses_encontrados):
+    nome = nome_planilha(ano, mes)
+    file_id, abas = baixar_planilha(nome)
+    if file_id:
+        print(f"✅ Planilha existente '{nome}' baixada ({len(abas)} abas).")
+    else:
+        print(f"ℹ️ Planilha '{nome}' não encontrada no Drive. Uma nova será criada.")
+
+    linhas_antes = sum(len(df) for df in abas.values())
+
+    for aero_upper, df_novos in novas_por_aero.items():
+        # Separa só as mensagens deste ano/mês
+        datas = pd.to_datetime(df_novos['DATA_HORA_UTC'], errors='coerce')
+        df_mes = df_novos[(datas.dt.year == ano) & (datas.dt.month == mes)]
+        if df_mes.empty:
+            continue
+        if aero_upper in abas:
+            abas[aero_upper] = pd.concat([abas[aero_upper], df_mes], ignore_index=True)
+        else:
+            abas[aero_upper] = df_mes.copy()
+
+    # Limpeza: remove repetidas (a busca de 4 dias sempre traz mensagens que
+    # já estavam na planilha) e ordena por data/hora.
+    for aba, df in abas.items():
+        if df.empty:
+            continue
+        df = df.copy()
+        df['DATA_HORA_DT'] = pd.to_datetime(df['DATA_HORA_UTC'], errors='coerce')
+        df_limpo = df.drop_duplicates(subset=['DATA_HORA_DT', 'MENSAGEM']).copy()
+        df_limpo = df_limpo.sort_values(by='DATA_HORA_DT').reset_index(drop=True)
+        df_limpo['DATA_HORA_UTC'] = df_limpo['DATA_HORA_DT'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        abas[aba] = df_limpo.drop(columns=['DATA_HORA_DT'], errors='ignore')
+
+    linhas_depois = sum(len(df) for df in abas.values())
+    novas = linhas_depois - linhas_antes
+    print(f"➕ '{nome}': {novas} mensagem(ns) nova(s).")
+
+    # Se a planilha já existia e nada mudou, não precisa reenviar.
+    if file_id and novas == 0:
+        print(f"⏭️ '{nome}' já estava em dia; nada a enviar.")
         continue
-    df['DATA_HORA_DT'] = pd.to_datetime(df['DATA_HORA_UTC'], errors='coerce')
-    df_limpo = df.drop_duplicates(subset=['DATA_HORA_DT', 'MENSAGEM']).copy()
-    df_limpo = df_limpo.sort_values(by='DATA_HORA_DT').reset_index(drop=True)
-    df_limpo['DATA_HORA_UTC'] = df_limpo['DATA_HORA_DT'].dt.strftime('%Y-%m-%d %H:%M:%S')
-    df_limpo = df_limpo.drop(columns=['DATA_HORA_DT'], errors='ignore')
-    abas_consolidadas[aba] = df_limpo
+    if not abas:
+        print(f"⏭️ Sem mensagens para '{nome}' ainda; nada a criar.")
+        continue
 
-# --- 6. SALVA COM FORMATAÇÃO PADRÃO E ENVIA AO GOOGLE DRIVE ---
-output_buffer = io.BytesIO()
-with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-    workbook = writer.book
-    format_wrap = workbook.add_format({'text_wrap': True, 'valign': 'top', 'border': 1})
-    format_header = workbook.add_format({'bold': True, 'bg_color': '#D7E4BC', 'border': 1})
-
-    for aba, df in abas_consolidadas.items():
-        cols = [c for c in ['DATA_HORA_UTC', 'MENSAGEM'] if c in df.columns]
-        df_salvar = df[cols] if cols else df
-        df_salvar.to_excel(writer, sheet_name=aba, index=False)
-
-        worksheet = writer.sheets[aba]
-        for col_num, value in enumerate(df_salvar.columns.values):
-            worksheet.write(0, col_num, value, format_header)
-        worksheet.set_column('A:A', 20, format_wrap)
-        worksheet.set_column('B:B', 150, format_wrap)
-
-output_buffer.seek(0)
-media = MediaIoBaseUpload(
-    output_buffer,
-    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    resumable=True
-)
-
-if file_id_existente:
-    drive_service.files().update(fileId=file_id_existente, media_body=media).execute()
-    print(f"✨ Planilha '{NOME_PLANILHA}' atualizada com sucesso no Google Drive!")
-else:
-    file_metadata = {'name': NOME_PLANILHA, 'parents': [folder_id]}
-    drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"✨ Nova planilha '{NOME_PLANILHA}' criada com sucesso no Google Drive!")
+    salvar_planilha(nome, file_id, abas)
