@@ -118,7 +118,7 @@ def mostrar_mapa(m, altura):
 # MENU
 # ============================================================================
 st.sidebar.title("✈️ Meteorologia Aeronáutica")
-aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em tempo real", "📺 Aulas e simuladores", "📚 Materiais e links"],
+aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em tempo real", "📺 Aulas e simuladores", "📚 Materiais e links", "👤 Sobre o professor"],
                        label_visibility="collapsed")
 
 # ============================================================================
@@ -307,6 +307,13 @@ elif aba.startswith("📺"):
     else:
         st.info("Em breve. Para publicar um simulador, coloque o arquivo .html na pasta "
                 "'simuladores' do repositório: ele aparece aqui automaticamente.", icon="🧪")
+
+# ============================================================================
+# ABA 4 — SOBRE O PROFESSOR (currículo em formato de perfil; texto em modulos/sobre.py)
+# ============================================================================
+elif aba.startswith("👤"):
+    from modulos.sobre import mostrar_sobre
+    mostrar_sobre()
 
 # ============================================================================
 # ABA 3 — MATERIAIS
