@@ -318,11 +318,11 @@ def relatorio_sbsp_auto(df, ano, mes, dias_falhos):
                                 'Emitido por': '', 'Mensagem': ''})
                 continue
             prim = cand.sort_values('RECEBIMENTO').iloc[0]
-            atraso = prim['ATRASO_MIN']
+            atraso = prim['ATRASO_MIN'] if pd.notna(prim['ATRASO_MIN']) else None
             estado = 'ATRASADO' if (atraso is not None and atraso >= LIMITE_METAR) else 'NO HORÁRIO'
             detalhe.append({'Horário previsto (Z)': alvo.strftime('%d/%m/%Y %H:%M'),
                             'Estado': estado,
-                            'Recebido em': prim['RECEBIMENTO'].strftime('%d/%m/%Y %H:%M') if prim['RECEBIMENTO'] is not None else '',
+                            'Recebido em': prim['RECEBIMENTO'].strftime('%d/%m/%Y %H:%M') if pd.notna(prim['RECEBIMENTO']) else '',
                             'Atraso (min)': atraso,
                             'Emitido por': 'AUTOMETAR' if prim['AUTO'] else 'OPERADOR',
                             'Mensagem': prim['MENSAGEM']})
@@ -443,4 +443,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    from comum import rodar
+    rodar(main)

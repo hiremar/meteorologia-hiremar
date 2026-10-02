@@ -98,4 +98,5 @@ def _pasta_por_nome(nome_pasta):
 
 
 if __name__ == '__main__':
-    main()
+    from comum import rodar
+    rodar(main)

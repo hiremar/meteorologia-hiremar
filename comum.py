@@ -379,3 +379,24 @@ def mensagens_para_planilha(itens):
             continue
         linhas.append({'DATA_HORA_UTC': it.get('validade_inicial', ''), 'MENSAGEM': msg})
     return linhas
+
+
+# ----------------------------------------------------------------------------
+# ERROS VISÍVEIS NO GITHUB
+# ----------------------------------------------------------------------------
+def rodar(main):
+    """Roda main(); se der erro, além do traceback normal, publica o erro como
+    "annotation" do GitHub (aparece no resumo da execução, em vermelho)."""
+    import traceback
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception:
+        tb = traceback.format_exc()
+        print(tb)
+        if os.environ.get('GITHUB_ACTIONS'):
+            linhas = tb.strip().splitlines()[-12:]
+            msg = '%0A'.join(l.replace('%', '%25').replace('\r', '') for l in linhas)
+            print(f'::error title=Falha no robô::{msg}')
+        raise SystemExit(1)

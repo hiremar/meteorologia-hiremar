@@ -336,4 +336,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    from comum import rodar
+    rodar(main)
