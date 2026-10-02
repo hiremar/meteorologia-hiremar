@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard Meteorologia - CRCEA-SE</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f2f5; padding: 10px; }
+        .container { max-width: 1350px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .header-institucional { text-align: center; margin-bottom: 30px; }
+        .logo-republica { width: 90px; height: auto; margin-bottom: 15px; }
+        .titulo-fab { color: #1a3a5a; font-size: 1.05em; font-weight: bold; line-height: 1.5; text-transform: uppercase; }
+        h2 { color: #2c3e50; text-align: center; background: #f8f9fa; padding: 8px; border-radius: 8px; margin-top: 25px; border-left: 5px solid #3498db; }
+        .painel-controles { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; background: #ebf2f7; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .grupo-filtro, .grupo-cores { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .secao-graficos { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .card { border: 1px solid #eee; padding: 15px; border-radius: 8px; background: #fff; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); position: relative; }
+        .titulo-dinamico { font-weight: bold; color: #2c3e50; font-size: 1.1em; margin-bottom: 2px; }
+        .subtitulo-dinamico { color: #7f8c8d; font-size: 0.9em; margin-bottom: 15px; text-transform: capitalize; }
+        .btn-export-card { background: #27ae60; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.8em; margin-top: 15px; }
+        input[type="color"] { border: none; width: 30px; height: 30px; cursor: pointer; background: none; }
+        .secao-tabela { margin-top: 30px; padding: 15px; background: #fff; border-radius: 8px; border: 1px solid #ddd; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
+        th { background-color: #3498db; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        .alerta-negativo { color: #e74c3c; font-weight: bold; }
+        .prov { color: #e67e22; font-weight: bold; cursor: help; }
+        .nota-prov { color: #7f8c8d; font-size: 0.85em; margin-top: 8px; }
+        .gerado { text-align: center; color: #95a5a6; font-size: 0.8em; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-institucional">
+            <img src="__LOGO__" alt="" class="logo-republica">
+            <div class="titulo-fab">
+                MINISTÉRIO DA DEFESA<br>
+                COMANDO DA AERONÁUTICA<br>
+                CENTRO REGIONAL DE CONTROLE DO ESPAÇO AÉREO SUDESTE<br>
+                DIVISÃO DE OPERAÇÕES<br>
+                SUBDIVISÃO DE METEOROLOGIA AERONÁUTICA<br>
+                Contato: _omet.crcease@fab.br / (11)2112-3495
+            </div>
+        </div>
+
+        <div class="painel-controles">
+            <div class="grupo-filtro">
+                Ano: <select id="selAno" onchange="atualizar()"></select>
+                Mês: <select id="selMes" onchange="atualizar()"></select>
+                Estação: <select id="selEst" onchange="atualizar()"></select>
+            </div>
+            <div class="grupo-cores">
+                Cor Pont.: <input type="color" id="corP" value="#3498db" onchange="atualizar()">
+                Cor Cons.: <input type="color" id="corC" value="#2ecc71" onchange="atualizar()">
+            </div>
+        </div>
+
+        <h2>📈 1. Evolução Mensal da Estação</h2>
+        <div class="secao-graficos">
+            <div class="card" id="export-evolP">
+                <div class="titulo-dinamico">Histórico: Pontualidade</div><div class="subtitulo-dinamico" id="subEvolP"></div>
+                <canvas id="chartEvolP"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-evolP', 'Evol_P')">📸 Exportar</button>
+            </div>
+            <div class="card" id="export-evolC">
+                <div class="titulo-dinamico">Histórico: Consistência</div><div class="subtitulo-dinamico" id="subEvolC"></div>
+                <canvas id="chartEvolC"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-evolC', 'Evol_C')">📸 Exportar</button>
+            </div>
+        </div>
+
+        <h2>⚖️ 2. Comparativo Mensal</h2>
+        <div class="secao-graficos">
+            <div class="card" id="export-compP">
+                <div class="titulo-dinamico">Comparativo: Pontualidade</div><div class="subtitulo-dinamico" id="subCompP"></div>
+                <canvas id="chartCompP"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-compP', 'Comp_P')">📸 Exportar</button>
+            </div>
+            <div class="card" id="export-compC">
+                <div class="titulo-dinamico">Comparativo: Consistência</div><div class="subtitulo-dinamico" id="subCompC"></div>
+                <canvas id="chartCompC"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-compC', 'Comp_C')">📸 Exportar</button>
+            </div>
+        </div>
+
+        <h2>🏆 3. Rankings do Ano</h2>
+        <div class="secao-graficos">
+            <div class="card" id="export-rankP">
+                <div class="titulo-dinamico">Ranking: Pontualidade</div><div class="subtitulo-dinamico" id="subRankP"></div>
+                <canvas id="chartRankP"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-rankP', 'Rank_P')">📸 Exportar</button>
+            </div>
+            <div class="card" id="export-rankC">
+                <div class="titulo-dinamico">Ranking: Consistência</div><div class="subtitulo-dinamico" id="subRankC"></div>
+                <canvas id="chartRankC"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-rankC', 'Rank_C')">📸 Exportar</button>
+            </div>
+        </div>
+
+        <h2>📉 4. Evolução Anual (Médias Históricas)</h2>
+        <div class="secao-graficos">
+            <div class="card" id="export-anoP">
+                <div class="titulo-dinamico">Média Anual: Pontualidade</div><div class="subtitulo-dinamico" id="subAnoP"></div>
+                <canvas id="chartAnoP"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-anoP', 'Anual_P')">📸 Exportar</button>
+            </div>
+            <div class="card" id="export-anoC">
+                <div class="titulo-dinamico">Média Anual: Consistência</div><div class="subtitulo-dinamico" id="subAnoC"></div>
+                <canvas id="chartAnoC"></canvas>
+                <button class="btn-export-card" onclick="exportarElemento('export-anoC', 'Anual_C')">📸 Exportar</button>
+            </div>
+        </div>
+
+        <h2>📋 Tabela de Dados: <span id="tituloTabela"></span></h2>
+        <div class="secao-tabela" id="tabela-container"></div>
+        <div class="gerado">Gerado automaticamente em __GERADO__</div>
+    </div>
+
+    <script>
+        const data = __DADOS__;
+        const meses = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+        const ests = [...new Set(data.map(d => d.est))].sort();
+        const anos = [...new Set(data.map(d => d.ano))].sort();
+
+        const sE = document.getElementById('selEst');
+        const sA = document.getElementById('selAno');
+        const sM = document.getElementById('selMes');
+        ests.forEach(e => sE.innerHTML += `<option value="${e}">${e}</option>`);
+        anos.forEach(a => sA.innerHTML += `<option value="${a}">${a}</option>`);
+        meses.forEach(m => sM.innerHTML += `<option value="${m}">${m.toUpperCase()}</option>`);
+
+        function aplicarCores(valores, meta, corUser) {
+            return valores.map(v => (v === null || v < meta) ? '#e74c3c' : corUser);
+        }
+
+        function configComMeta(meta, labels) {
+            return {
+                type: 'bar',
+                data: { labels: labels, datasets: [{ data: [], backgroundColor: [], borderRadius: 4 }] },
+                options: {
+                    scales: { y: { min: 92, max: 100 } },
+                    plugins: {
+                        legend: { display: false },
+                        annotation: {
+                            annotations: {
+                                line1: {
+                                    type: 'line', yMin: meta, yMax: meta,
+                                    borderColor: 'red', borderWidth: 2, borderDash: [5, 5],
+                                    label: { display: true, content: 'Meta ' + meta + '%', backgroundColor: 'red', color: 'white', position: 'end' }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        const charts = {
+            anoP: new Chart(document.getElementById('chartAnoP'), configComMeta(98, anos)),
+            anoC: new Chart(document.getElementById('chartAnoC'), configComMeta(98.5, anos)),
+            rankP: new Chart(document.getElementById('chartRankP'), configComMeta(98, [])),
+            rankC: new Chart(document.getElementById('chartRankC'), configComMeta(98.5, [])),
+            compP: new Chart(document.getElementById('chartCompP'), configComMeta(98, ests)),
+            compC: new Chart(document.getElementById('chartCompC'), configComMeta(98.5, ests)),
+            evolP: new Chart(document.getElementById('chartEvolP'), configComMeta(98, meses)),
+            evolC: new Chart(document.getElementById('chartEvolC'), configComMeta(98.5, meses))
+        };
+
+        function atualizar() {
+            const anoSel = sA.value; const mesSel = sM.value; const estSel = sE.value;
+            const corP = document.getElementById('corP').value;
+            const corC = document.getElementById('corC').value;
+
+            document.getElementById('tituloTabela').innerText = mesSel.toUpperCase() + " / " + anoSel;
+            document.getElementById('subAnoP').innerText = "Estação: " + estSel;
+            document.getElementById('subAnoC').innerText = "Estação: " + estSel;
+            document.getElementById('subRankP').innerText = "Média Anual - " + anoSel;
+            document.getElementById('subRankC').innerText = "Média Anual - " + anoSel;
+            document.getElementById('subCompP').innerText = mesSel + " / " + anoSel;
+            document.getElementById('subCompC').innerText = mesSel + " / " + anoSel;
+            document.getElementById('subEvolP').innerText = "Estação: " + estSel + " (" + anoSel + ")";
+            document.getElementById('subEvolC').innerText = "Estação: " + estSel + " (" + anoSel + ")";
+
+            let dAno = anos.map(a => {
+                let regs = data.filter(d => d.est === estSel && d.ano === a);
+                return { p: regs.length ? +(regs.reduce((acc,b) => acc + b.pont, 0) / regs.length).toFixed(2) : 0,
+                          c: regs.length ? +(regs.reduce((acc,b) => acc + b.cons, 0) / regs.length).toFixed(2) : 0 };
+            });
+            charts.anoP.data.datasets[0].data = dAno.map(x => x.p);
+            charts.anoP.data.datasets[0].backgroundColor = aplicarCores(dAno.map(x => x.p), 98, corP);
+            charts.anoC.data.datasets[0].data = dAno.map(x => x.c);
+            charts.anoC.data.datasets[0].backgroundColor = aplicarCores(dAno.map(x => x.c), 98.5, corC);
+
+            let rData = ests.map(e => {
+                let regs = data.filter(d => d.est === e && d.ano === anoSel);
+                return { e, p: regs.length ? +(regs.reduce((a,b) => a + b.pont, 0) / regs.length).toFixed(2) : 0,
+                          c: regs.length ? +(regs.reduce((a,b) => a + b.cons, 0) / regs.length).toFixed(2) : 0 };
+            });
+            let rP = [...rData].sort((a,b) => b.p - a.p);
+            charts.rankP.data.labels = rP.map(x => x.e);
+            charts.rankP.data.datasets[0].data = rP.map(x => x.p);
+            charts.rankP.data.datasets[0].backgroundColor = aplicarCores(rP.map(x => x.p), 98, corP);
+            let rC = [...rData].sort((a,b) => b.c - a.c);
+            charts.rankC.data.labels = rC.map(x => x.e);
+            charts.rankC.data.datasets[0].data = rC.map(x => x.c);
+            charts.rankC.data.datasets[0].backgroundColor = aplicarCores(rC.map(x => x.c), 98.5, corC);
+
+            const dMes = data.filter(d => d.mes === mesSel && d.ano === anoSel);
+            charts.compP.data.datasets[0].data = ests.map(e => { const r = dMes.find(x => x.est === e); return r ? r.pont : 0; });
+            charts.compP.data.datasets[0].backgroundColor = aplicarCores(charts.compP.data.datasets[0].data, 98, corP);
+            charts.compC.data.datasets[0].data = ests.map(e => { const r = dMes.find(x => x.est === e); return r ? r.cons : 0; });
+            charts.compC.data.datasets[0].backgroundColor = aplicarCores(charts.compC.data.datasets[0].data, 98.5, corC);
+
+            const dEvol = data.filter(d => d.est === estSel && d.ano === anoSel);
+            charts.evolP.data.datasets[0].data = meses.map(m => { const r = dEvol.find(x => x.mes === m); return r ? r.pont : null; });
+            charts.evolP.data.datasets[0].backgroundColor = aplicarCores(charts.evolP.data.datasets[0].data, 98, corP);
+            charts.evolC.data.datasets[0].data = meses.map(m => { const r = dEvol.find(x => x.mes === m); return r ? r.cons : null; });
+            charts.evolC.data.datasets[0].backgroundColor = aplicarCores(charts.evolC.data.datasets[0].data, 98.5, corC);
+
+            Object.values(charts).forEach(c => c.update());
+            gerarTabela(dMes);
+        }
+
+        function gerarTabela(lista) {
+            let html = '<table><thead><tr><th>Estação</th><th>Mensagens</th><th>Pontualidade</th><th>Consistência</th></tr></thead><tbody>';
+            ests.forEach(e => {
+                const r = lista.find(x => x.est === e);
+                if(r) {
+                    html += `<tr><td>${e}</td><td>${r.total}</td>
+                        <td class="${r.pont < 98 ? 'alerta-negativo' : ''}">${r.pont}%${r.prov ? ' <span class="prov" title="Atrasos/ausências provisórios (REDEMET) — aguardando o relatório do DECEA">*</span>' : ''}</td>
+                        <td class="${r.cons < 98.5 ? 'alerta-negativo' : ''}">${r.cons}%</td></tr>`;
+                } else { html += `<tr><td>${e}</td><td>0</td><td>0%</td><td>0%</td></tr>`; }
+            });
+            const temProv = lista.some(x => x.prov);
+            document.getElementById('tabela-container').innerHTML = html + '</tbody></table>' +
+                (temProv ? '<p class="nota-prov">* Pontualidade provisória (atrasos/ausências pela REDEMET). Será substituída pelo relatório do DECEA.</p>' : '');
+        }
+
+        function exportarElemento(id, nomeBase) {
+            const el = document.getElementById(id);
+            const btn = el.querySelector('.btn-export-card');
+            btn.style.visibility = 'hidden';
+            html2canvas(el, { scale: 2 }).then(canvas => {
+                let lnk = document.createElement('a');
+                lnk.download = nomeBase + '.png';
+                lnk.href = canvas.toDataURL("image/png");
+                lnk.click();
+                btn.style.visibility = 'visible';
+            });
+        }
+
+        // ==========================================
+        // AUTO-SELEÇÃO DOS ÚLTIMOS DADOS DISPONÍVEIS
+        // ==========================================
+        if (data.length > 0) {
+            // Busca o maior ano na lista
+            const ultimoAno = anos[anos.length - 1];
+
+            // Filtra os dados desse ano para achar o maior mês que contém dados
+            const mesesComDadosNoUltimoAno = data
+                .filter(d => d.ano === ultimoAno)
+                .map(d => d.mes);
+
+            // Encontra o último mês (baseado na ordem da array 'meses')
+            let ultimoMes = meses[0];
+            for (let i = meses.length - 1; i >= 0; i--) {
+                if (mesesComDadosNoUltimoAno.includes(meses[i])) {
+                    ultimoMes = meses[i];
+                    break;
+                }
+            }
+
+            sA.value = ultimoAno;
+            sM.value = ultimoMes;
+        }
+
+        atualizar();
+    </script>
+</body>
+</html>

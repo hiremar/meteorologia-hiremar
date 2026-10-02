@@ -2,14 +2,20 @@ name: Automacao METAR REDEMET -> Google Drive
 
 on:
   schedule:
-    # Roda diariamente às 06:00 UTC (03:00 da manhã no Brasil)
-    - cron: '0 6 * * *'
-  # Permite executar manualmente a qualquer momento
+    # Todo dia ~06:23 UTC (03:23 no Brasil). Minuto "quebrado" de propósito:
+    # o GitHub atrasa/descarta mais os agendamentos marcados em hora cheia.
+    - cron: '23 6 * * *'
   workflow_dispatch:
+
+# Um robô por vez mexendo no Drive (evita dois salvarem a mesma planilha juntos)
+concurrency:
+  group: drive-fab
+  cancel-in-progress: false
 
 jobs:
   executar-script:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Baixar código do repositório
         uses: actions/checkout@v4
@@ -28,5 +34,6 @@ jobs:
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           REDEMET_KEY: ${{ secrets.REDEMET_KEY }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: |
           python script_opmet.py

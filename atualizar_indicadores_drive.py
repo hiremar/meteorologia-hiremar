@@ -1,215 +1,200 @@
 #!/usr/bin/env python3
 """
-Preenche a planilha "Indicadores de Meteorologia atualizada 2026.xlsx" (no
-Google Drive) com os resultados da auditoria de consistência de um mês:
-número de mensagens e erros de consistência, por aeródromo.
+Preenche a planilha "Indicadores de Meteorologia atualizada 2026.xlsx"
+(pasta Indicadores MET) com os números do mês, por aeródromo:
 
-As colunas de porcentagem (G = pontualidade, H = consistência) já têm
-FÓRMULA na planilha (ex.: =(D58-F58)/D58) — este script nunca escreve nelas,
-só em D e F. A fórmula recalcula sozinha quando a planilha é aberta.
+    D  numero de mensagens      <- RESUMO da AUDITORIA_<MES><ANO> CONSISTÊNCIA.xlsx
+    E  mensagens atrasadas      <- RESUMO do ATRASOS_METAR_SPECI_<AAAA>_<MM>_FINAL.xlsx
+                                   (PROVISÓRIO, REDEMET: atrasadas + ausentes)
+                                   depois substituído pelo DECEA (decea_relatorio.py)
+    F  erros de consistência    <- RESUMO da AUDITORIA
 
-Se a linha do mês/ano ainda não existir na aba do aeródromo, o script cria
-uma nova linha automaticamente (copiando o nome da estação da última linha
-existente e repetindo as fórmulas de G/H para a linha nova).
+G e H (porcentagens) são FÓRMULAS da planilha e nunca são tocadas.
 
-Fonte dos dados: a aba RESUMO de AUDITORIA_<MES><ANO> CONSISTÊNCIA.xlsx,
-gerada pelo auditoria_metar.py (mesma pasta CONSISTENCIA do Drive).
+PROTEÇÃO DOS SEUS AJUSTES
+Cada célula que o robô escreve ganha uma NOTA (comentário) dizendo a fonte e
+o valor que ele colocou. Na próxima rodada:
+  - célula vazia                          -> o robô preenche;
+  - nota do robô e valor igual ao da nota -> o robô pode atualizar;
+  - valor diferente da nota / sem nota    -> foi você que mexeu: NÃO mexe;
+  - nota "DECEA" na coluna E              -> a REDEMET nunca sobrescreve.
+--forcar ignora a proteção (menos a do DECEA).
 
-Modos de uso
-------------
-1) GitHub Actions (roda logo depois do auditoria_metar.py, dia 2):
-       python atualizar_indicadores_drive.py
-    -> usa o mês ANTERIOR, lê a auditoria da pasta CONSISTENCIA
-       (DRIVE_FOLDER_ID) e atualiza a planilha na pasta Indicadores MET
-       (INDICADORES_FOLDER_ID), ambas via conta de serviço (GCP_SA_KEY).
-
-2) Mês específico:
-       python atualizar_indicadores_drive.py --mes 2026-09
+Uso:
+    python atualizar_indicadores_drive.py               # mês anterior, Drive
+    python atualizar_indicadores_drive.py --mes 2026-09 [--forcar]
 """
 import argparse
 import io
-import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
 import openpyxl
+from openpyxl.comments import Comment
 
-MESES_ABREV = ['JAN', 'FEV', 'MAR', 'ABR', 'MAI', 'JUN',
-               'JUL', 'AGO', 'SET', 'OUT', 'NOV', 'DEZ']
-MESES_PT = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
-            'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro']
+from comum import (MESES_ABREV, MESES_PT, abrir_pastas, argumentos_pastas,
+                   ler_mes, nome_consistencia)
 
 NOME_PLANILHA_INDICADORES = os.environ.get(
     'INDICADORES_FILE_NAME', 'Indicadores de Meteorologia atualizada 2026.xlsx')
 
-XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+COL_D, COL_E, COL_F, COL_G, COL_H = 4, 5, 6, 7, 8
+RE_NOTA = re.compile(r'\[robô fonte=(\w+) valor=([^\]]*)\]')
 
 
 # ----------------------------------------------------------------------------
-# GOOGLE DRIVE (conta de serviço)
+# CÉLULAS COM NOTA DO ROBÔ
 # ----------------------------------------------------------------------------
-def drive_service():
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    info = json.loads(os.environ['GCP_SA_KEY'])
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=['https://www.googleapis.com/auth/drive'])
-    return build('drive', 'v3', credentials=creds, cache_discovery=False)
+def nota_do_robo(cell):
+    """Devolve (fonte, valor_texto) se a célula tem nota do robô; senão None."""
+    if cell.comment and cell.comment.text:
+        m = RE_NOTA.search(cell.comment.text)
+        if m:
+            return m.group(1), m.group(2)
+    return None
 
 
-def achar_arquivo(svc, nome, pasta_id):
-    nome_q = nome.replace("'", "\\'")
-    q = f"name = '{nome_q}' and '{pasta_id}' in parents and trashed = false"
-    r = svc.files().list(q=q, fields='files(id,name)', supportsAllDrives=True,
-                          includeItemsFromAllDrives=True).execute()
-    arqs = r.get('files', [])
-    return arqs[0]['id'] if arqs else None
+def _igual(a, b):
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
 
 
-def baixar(svc, file_id):
-    from googleapiclient.http import MediaIoBaseDownload
-    buf = io.BytesIO()
-    req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
-    dl = MediaIoBaseDownload(buf, req)
-    feito = False
-    while not feito:
-        _, feito = dl.next_chunk()
-    buf.seek(0)
-    return buf
+def escrever(cell, valor, fonte, forcar=False):
+    """Escreve 'valor' respeitando a proteção. Devolve 'escrito', 'igual' ou o motivo de não escrever."""
+    nota = nota_do_robo(cell)
+    if fonte != 'DECEA' and nota and nota[0] == 'DECEA':
+        return 'protegido (DECEA)'
+    vazio = cell.value is None or str(cell.value).strip() == ''
+    pode = (fonte == 'DECEA' and (vazio or nota or forcar)) or vazio or forcar \
+        or (nota is not None and _igual(cell.value, nota[1]))
+    if not pode:
+        return 'editado à mão (mantido)'
+    if not vazio and _igual(cell.value, valor) and nota and nota[0] == fonte:
+        return 'igual'
+    cell.value = valor
+    descricao = {'AUDITORIA': 'auditoria de consistência (GitHub)',
+                 'REDEMET': 'PROVISÓRIO — atrasos+ausências pela REDEMET',
+                 'DECEA': 'OFICIAL — relatório do DECEA (atrasadas+ausentes, METAR+SPECI)'}[fonte]
+    texto = (f'Preenchido pelo robô em {datetime.now(timezone.utc):%d/%m/%Y %H:%MZ}: {descricao}.\n'
+             f'Se você alterar o valor, o robô não mexe mais nesta célula.\n'
+             f'[robô fonte={fonte} valor={valor}]')
+    cell.comment = Comment(texto, 'robô')
+    cell.comment.width, cell.comment.height = 300, 110
+    return 'escrito'
 
 
-def enviar(svc, buf, file_id, pasta_id, nome):
-    from googleapiclient.http import MediaIoBaseUpload
-    media = MediaIoBaseUpload(buf, mimetype=XLSX_MIME, resumable=False)
-    if file_id:
-        svc.files().update(fileId=file_id, media_body=media, supportsAllDrives=True).execute()
-        print(f'♻️  Atualizado no Drive: {nome}')
-    else:
-        body = {'name': nome, 'parents': [pasta_id]}
-        svc.files().create(body=body, media_body=media, fields='id', supportsAllDrives=True).execute()
-        print(f'📁 Criado no Drive: {nome}')
+def linha_do_mes(ws, ano, mes_pt, criar=True):
+    """Acha (ou cria) a linha do mês/ano na aba do aeródromo. Devolve o nº da linha."""
+    ultima = None
+    for row in ws.iter_rows(min_row=2):
+        if row[0].value is not None:
+            ultima = row[0].row
+        try:
+            ano_cel = int(row[1].value) if row[1].value is not None else None
+        except (TypeError, ValueError):
+            ano_cel = None
+        if ano_cel == ano and str(row[2].value or '').strip().lower() == mes_pt:
+            return row[0].row
+    if not criar:
+        return None
+    n = (ultima + 1) if ultima else 2
+    estacao = ws.cell(row=ultima, column=1).value if ultima else ws.title
+    ws.cell(row=n, column=1, value=estacao)
+    ws.cell(row=n, column=2, value=ano)
+    ws.cell(row=n, column=3, value=mes_pt)
+    ws.cell(row=n, column=COL_G, value=f'=(D{n}-E{n})/D{n}')
+    ws.cell(row=n, column=COL_H, value=f'=(D{n}-F{n})/D{n}')
+    # copia a formatação da linha de cima (cores, bordas, %)
+    if ultima:
+        for c in range(1, 9):
+            de, para = ws.cell(row=ultima, column=c), ws.cell(row=n, column=c)
+            if de.has_style:
+                para._style = de._style
+    return n
 
 
-# ----------------------------------------------------------------------------
-# LÓGICA DE ATUALIZAÇÃO
-# ----------------------------------------------------------------------------
-def ler_resumo(buf_auditoria):
-    wb = openpyxl.load_workbook(buf_auditoria, data_only=True)
-    ws = wb['RESUMO']
-    resumo = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        aero, mensagens, alertas = row[0], row[1], row[2]
-        if aero is None:
-            continue
-        resumo[str(aero).upper()] = (mensagens, alertas)
-    return resumo
-
-
-def atualizar_indicadores(buf_indicadores, resumo, ano, mes_pt):
-    wb = openpyxl.load_workbook(buf_indicadores)  # mantém fórmulas/formatação
-    nao_encontrados, linhas_criadas = [], []
-
-    for aero, (mensagens, alertas) in resumo.items():
+def aplicar(wb, valores, ano, mes, fonte, forcar=False):
+    """valores = {'SBMT': {COL_D: 591, COL_F: 21}, ...}. Devolve relatório (lista de linhas)."""
+    mes_pt = MESES_PT[mes - 1]
+    rel = []
+    for aero, cols in valores.items():
         if aero not in wb.sheetnames:
-            nao_encontrados.append(aero)
+            rel.append(f'⚠️ {aero}: sem aba na planilha de Indicadores')
             continue
-
         ws = wb[aero]
+        n = linha_do_mes(ws, ano, mes_pt)
+        partes = []
+        for col, v in cols.items():
+            res = escrever(ws.cell(row=n, column=col), v, fonte, forcar)
+            partes.append(f"{'DEF'[col - 4]}={v} ({res})")
+        rel.append(f'{aero} linha {n}: ' + ', '.join(partes))
+    return rel
 
-        linha_alvo = None
-        ultima_linha_dado = None
-        for row in ws.iter_rows(min_row=2):
-            if row[0].value is not None:
-                ultima_linha_dado = row
-            if row[1].value == ano and row[2].value == mes_pt:
-                linha_alvo = row
-                break
 
-        if linha_alvo is None:
-            # Mês ainda não tem linha na planilha -> cria uma nova,
-            # logo depois da última linha com dado, copiando o nome da
-            # estação e repetindo as fórmulas de pontualidade/consistência.
-            nova_linha_num = (ultima_linha_dado[0].row + 1) if ultima_linha_dado else 2
-            estacao = ultima_linha_dado[0].value if ultima_linha_dado else aero
-            ws.cell(row=nova_linha_num, column=1, value=estacao)          # A: Estação
-            ws.cell(row=nova_linha_num, column=2, value=ano)              # B: ano
-            ws.cell(row=nova_linha_num, column=3, value=mes_pt)           # C: mês
-            ws.cell(row=nova_linha_num, column=7,                        # G: % pontualidade
-                    value=f'=(D{nova_linha_num}-E{nova_linha_num})/D{nova_linha_num}')
-            ws.cell(row=nova_linha_num, column=8,                        # H: % consistência
-                    value=f'=(D{nova_linha_num}-F{nova_linha_num})/D{nova_linha_num}')
-            linha_alvo = list(ws[nova_linha_num])
-            linhas_criadas.append(aero)
+# ----------------------------------------------------------------------------
+def ler_resumo_auditoria(buf):
+    ws = openpyxl.load_workbook(buf, data_only=True)['RESUMO']
+    out = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row[0]:
+            out[str(row[0]).upper()] = {COL_D: int(row[1] or 0), COL_F: int(row[2] or 0)}
+    return out
 
-        linha_alvo[3].value = mensagens   # D: numero de mensagens
-        linha_alvo[5].value = alertas     # F: erros de consistência
-        # G e H já são fórmulas — não escrevemos nelas, a planilha recalcula
-        # sozinha ao abrir. E (mensagens atrasadas) também não é tocado aqui:
-        # vem do relatório do DECEA, via o notebook do Colab.
+
+def ler_resumo_atrasos(buf):
+    ws = openpyxl.load_workbook(buf, data_only=True)['RESUMO']
+    cab = [str(c.value or '') for c in ws[1]]
+    try:
+        i = next(k for k, t in enumerate(cab) if t.startswith('Total p/ indicador'))
+    except StopIteration:
+        return {}
+    out = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if row[0] and re.fullmatch(r'S[BD][A-Z]{2}', str(row[0])) and row[i] is not None:
+            out[str(row[0]).upper()] = {COL_E: int(row[i])}
+    return out
+
+
+def executar(ano, mes, pasta_cons, pasta_ind, forcar=False):
+    from mensal_redemet import nome_atrasos
+    nome_aud = f'AUDITORIA_{nome_consistencia(ano, mes)}'
+    if not pasta_ind.achar(NOME_PLANILHA_INDICADORES):
+        print(f'❌ Planilha de indicadores não encontrada: {NOME_PLANILHA_INDICADORES}')
+        sys.exit(1)
+    wb = openpyxl.load_workbook(pasta_ind.baixar(NOME_PLANILHA_INDICADORES))
+    rel = []
+
+    if pasta_cons.achar(nome_aud):
+        rel += aplicar(wb, ler_resumo_auditoria(pasta_cons.baixar(nome_aud)), ano, mes, 'AUDITORIA', forcar)
+    else:
+        print(f'⚠️ {nome_aud} não encontrada — D e F não atualizados.')
+
+    nome_atr = nome_atrasos(ano, mes)
+    if pasta_ind.achar(nome_atr):
+        rel += aplicar(wb, ler_resumo_atrasos(pasta_ind.baixar(nome_atr)), ano, mes, 'REDEMET', forcar)
+    else:
+        print(f'⚠️ {nome_atr} não encontrada — E (provisório) não atualizado.')
 
     saida = io.BytesIO()
     wb.save(saida)
-    saida.seek(0)
-    return saida, nao_encontrados, linhas_criadas
-
-
-def mes_anterior(hoje=None):
-    hoje = hoje or datetime.now(timezone.utc)
-    primeiro = hoje.replace(day=1)
-    ultimo_mes = primeiro - timedelta(days=1)
-    return ultimo_mes.year, ultimo_mes.month
+    pasta_ind.enviar(NOME_PLANILHA_INDICADORES, saida)
+    print('\n'.join(rel))
+    print(f'✅ Indicadores de {MESES_PT[mes - 1]}/{ano} atualizados.')
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mes', help='AAAA-MM (padrão: mês anterior)')
+    ap.add_argument('--forcar', action='store_true', help='sobrescreve mesmo valores editados à mão')
+    argumentos_pastas(ap)
     args = ap.parse_args()
-
-    if args.mes:
-        ano, mes = map(int, args.mes.split('-'))
-    else:
-        ano, mes = mes_anterior()
-
-    nome_auditoria = f'AUDITORIA_{MESES_ABREV[mes - 1]}{ano} CONSISTÊNCIA.xlsx'
-    mes_pt = MESES_PT[mes - 1]
-
-    pasta_consistencia = os.environ['DRIVE_FOLDER_ID']
-    pasta_indicadores = os.environ['INDICADORES_FOLDER_ID']
-
-    svc = drive_service()
-
-    fid_auditoria = achar_arquivo(svc, nome_auditoria, pasta_consistencia)
-    if not fid_auditoria:
-        print(f'❌ Auditoria não encontrada na pasta CONSISTENCIA: {nome_auditoria}')
-        sys.exit(1)
-
-    fid_indicadores = achar_arquivo(svc, NOME_PLANILHA_INDICADORES, pasta_indicadores)
-    if not fid_indicadores:
-        print(f'❌ Planilha de indicadores não encontrada: {NOME_PLANILHA_INDICADORES}')
-        sys.exit(1)
-
-    print(f'⬇️  Baixando {nome_auditoria}')
-    buf_auditoria = baixar(svc, fid_auditoria)
-    resumo = ler_resumo(buf_auditoria)
-
-    print(f'⬇️  Baixando {NOME_PLANILHA_INDICADORES}')
-    buf_indicadores = baixar(svc, fid_indicadores)
-
-    saida, nao_encontrados, linhas_criadas = atualizar_indicadores(buf_indicadores, resumo, ano, mes_pt)
-
-    enviar(svc, saida, fid_indicadores, pasta_indicadores, NOME_PLANILHA_INDICADORES)
-
-    if nao_encontrados:
-        print(f'⚠️  Aeródromos da auditoria sem aba correspondente em Indicadores: {nao_encontrados}')
-    if linhas_criadas:
-        print(f'ℹ️  Linha de {mes_pt}/{ano} criada automaticamente para: {linhas_criadas}')
-
-    print('✅ Indicadores atualizados (número de mensagens + erros de consistência).')
-
-
-if __name__ == '__main__':
-    main()
+    ano, mes = ler_mes(args.mes)
+    pasta_cons, pasta_ind = abrir_pastas(args)
+    executar(ano, mes, pasta_cons, pasta_ind, args.forcar)
 
 
 if __name__ == '__main__':

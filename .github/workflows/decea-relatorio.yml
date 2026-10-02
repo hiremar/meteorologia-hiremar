@@ -1,0 +1,46 @@
+name: Relatório DECEA (PDF) -> Indicadores + dashboard
+
+# Todo dia procura um PDF novo com "CRCEA" no nome na pasta "Indicadores MET".
+# Achou -> lança atrasadas+ausentes (METAR+SPECI) na coluna E e refaz o HTML.
+# Sem PDF novo, termina em poucos segundos.
+# Dica: depois de soltar o PDF na pasta, rode à mão (Actions -> este robô ->
+# Run workflow) para não esperar o dia seguinte.
+on:
+  schedule:
+    - cron: '13 11 * * *'     # 08:13 no Brasil
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: 'Reler todos os PDFs e sobrescrever até valores digitados à mão'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: drive-fab
+  cancel-in-progress: false
+
+jobs:
+  decea:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar bibliotecas necessárias
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas openpyxl xlsxwriter google-api-python-client google-auth pdfplumber
+
+      - name: Ler PDF do DECEA
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          INDICADORES_FOLDER_ID: ${{ secrets.INDICADORES_FOLDER_ID }}
+        run: python decea_relatorio.py ${{ github.event.inputs.forcar == 'true' && '--forcar' || '' }}

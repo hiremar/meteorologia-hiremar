@@ -11,6 +11,7 @@ Modos de uso
 
 2) Mês específico no Actions ou no terminal:
        python auditoria_metar.py --mes 2026-09
+   Se você editou a AUDITORIA à mão, ela não é regerada (use --forcar).
 
 3) Arquivo local (teste / Colab):
        python auditoria_metar.py --input "SET2026 CONSISTÊNCIA.xlsx" --saida AUDITORIA_SET2026.xlsx
@@ -290,83 +291,37 @@ def auditar_planilha(fonte, destino):
 
 
 # ----------------------------------------------------------------------------
-# GOOGLE DRIVE (conta de serviço) — usado no GitHub Actions
+# EXECUÇÃO (Drive no GitHub Actions, ou pasta local no Colab/teste)
 # ----------------------------------------------------------------------------
-XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-
-
-def drive_service():
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    info = json.loads(os.environ['GCP_SA_KEY'])
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=['https://www.googleapis.com/auth/drive'])
-    return build('drive', 'v3', credentials=creds, cache_discovery=False)
-
-
-def achar_arquivo(svc, nome, pasta_id):
-    nome_q = nome.replace("'", "\\'")
-    q = f"name = '{nome_q}' and '{pasta_id}' in parents and trashed = false"
-    r = svc.files().list(q=q, fields='files(id,name)', supportsAllDrives=True,
-                         includeItemsFromAllDrives=True).execute()
-    arqs = r.get('files', [])
-    return arqs[0]['id'] if arqs else None
-
-
-def baixar(svc, file_id):
-    from googleapiclient.http import MediaIoBaseDownload
-    buf = io.BytesIO()
-    req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
-    dl = MediaIoBaseDownload(buf, req)
-    feito = False
-    while not feito:
-        _, feito = dl.next_chunk()
-    buf.seek(0)
-    return buf
-
-
-def enviar(svc, buf, nome, pasta_id):
-    from googleapiclient.http import MediaIoBaseUpload
-    media = MediaIoBaseUpload(buf, mimetype=XLSX_MIME, resumable=False)
-    existente = achar_arquivo(svc, nome, pasta_id)
-    if existente:
-        svc.files().update(
-            fileId=existente, 
-            media_body=media, 
-            supportsAllDrives=True
-        ).execute()
-        print(f'♻️  Atualizado no Drive: {nome}')
-    else:
-        # Força o salvamento direto no diretório pai compartilhado
-        body = {
-            'name': nome, 
-            'parents': [pasta_id]
-        }
-        svc.files().create(
-            body=body, 
-            media_body=media, 
-            fields='id', 
-            supportsAllDrives=True
-        ).execute()
-        print(f'📁 Criado no Drive: {nome}')
-
-
-def mes_anterior(hoje=None):
-    hoje = hoje or datetime.now(timezone.utc)
-    primeiro = hoje.replace(day=1)
-    ultimo_mes = primeiro - timedelta(days=1)
-    return ultimo_mes.year, ultimo_mes.month
-
-
-def nome_planilha(ano, mes):
-    return f'{MESES[mes - 1]}{ano} CONSISTÊNCIA.xlsx'
+def executar(ano, mes, pasta_cons, forcar=False):
+    from comum import nome_consistencia
+    nome = nome_consistencia(ano, mes)
+    destino = f'AUDITORIA_{nome}'
+    if not pasta_cons.achar(nome):
+        print(f'❌ Planilha não encontrada na pasta: {nome}')
+        sys.exit(1)
+    # Protege os seus ajustes: se você editou a AUDITORIA depois do robô,
+    # ela NÃO é regerada (a não ser com --forcar).
+    if pasta_cons.achar(destino) and pasta_cons.editado_pelo_usuario(destino) and not forcar:
+        print(f'✋ {destino} foi editada por você — mantida. (use --forcar para refazer)')
+        return None
+    print(f'⬇️  Baixando {nome}')
+    origem = pasta_cons.baixar(nome)
+    saida = io.BytesIO()
+    resumo = auditar_planilha(origem, saida)
+    pasta_cons.enviar(destino, saida)
+    print('✅ Auditoria finalizada')
+    return resumo
 
 
 def main():
+    from comum import abrir_pastas, argumentos_pastas, ler_mes
     ap = argparse.ArgumentParser()
     ap.add_argument('--mes', help='AAAA-MM (padrão: mês anterior)')
-    ap.add_argument('--input', help='planilha local (pula o Drive)')
+    ap.add_argument('--input', help='planilha local avulsa (pula o Drive)')
     ap.add_argument('--saida', help='arquivo de saída local')
+    ap.add_argument('--forcar', action='store_true', help='refaz mesmo se você editou a auditoria')
+    argumentos_pastas(ap)
     args = ap.parse_args()
 
     if args.input:
@@ -375,26 +330,9 @@ def main():
         print(f'📁 Salvo em: {saida}')
         return
 
-    if args.mes:
-        ano, mes = map(int, args.mes.split('-'))
-    else:
-        ano, mes = mes_anterior()
-    nome = nome_planilha(ano, mes)
-    pasta_id = os.environ['DRIVE_FOLDER_ID']
-
-    svc = drive_service()
-    fid = achar_arquivo(svc, nome, pasta_id)
-    if not fid:
-        print(f'❌ Planilha não encontrada na pasta do Drive: {nome}')
-        sys.exit(1)
-
-    print(f'⬇️  Baixando {nome}')
-    origem = baixar(svc, fid)
-    saida = io.BytesIO()
-    auditar_planilha(origem, saida)
-    saida.seek(0)
-    enviar(svc, saida, f'AUDITORIA_{nome}', pasta_id)
-    print('✅ Auditoria finalizada')
+    ano, mes = ler_mes(args.mes)
+    pasta_cons, _ = abrir_pastas(args)
+    executar(ano, mes, pasta_cons, args.forcar)
 
 
 if __name__ == '__main__':
