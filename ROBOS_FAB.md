@@ -17,3 +17,14 @@ Tudo roda no GitHub Actions e grava no Google Drive (pasta `FAB/Indicadores MET`
 
 ## Plano B
 `colab/Robo_Meteorologia_PlanoB.ipynb` roda os mesmos scripts no Colab, com o Drive montado.
+
+## Autorização do Google (GOOGLE_TOKEN) — para o robô poder CRIAR arquivos
+A conta de serviço (`GCP_SA_KEY`) só consegue **atualizar** arquivos que já existem no seu Drive;
+o Google não deixa ela **criar** arquivos novos ("Service Accounts do not have storage quota").
+Sem o token, o robô avisa (aviso amarelo no Actions) e segue com o resto.
+Para resolver de vez: rode `colab/Gerar_GOOGLE_TOKEN.ipynb` e salve o resultado como secret
+**GOOGLE_TOKEN** (Settings → Secrets and variables → Actions). Os robôs passam a usá-lo sozinhos.
+
+## Planilha corrompida
+Se a planilha de Indicadores no Drive virar outro conteúdo (já aconteceu em 02/10/2026: virou o HTML),
+o robô busca sozinho a última versão boa no histórico do arquivo e regrava.
