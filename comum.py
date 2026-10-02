@@ -218,11 +218,23 @@ class PastaDrive:
         nome_q = nome.replace("'", "\\'")
         q = f"name = '{nome_q}' and '{self.folder_id}' in parents and trashed = false"
         r = self.svc.files().list(
-            q=q, fields='files(id,name,size,md5Checksum,modifiedTime,appProperties,'
+            q=q, fields='files(id,name,mimeType,size,md5Checksum,modifiedTime,appProperties,'
                         'lastModifyingUser(emailAddress,me))',
-            supportsAllDrives=True, includeItemsFromAllDrives=True,
+            supportsAllDrives=True, includeItemsFromAllDrives=True, orderBy='modifiedTime desc',
         ).execute(num_retries=TENTATIVAS_DRIVE)
         arqs = r.get('files', [])
+        if len(arqs) > 1:
+            # Arquivos REPETIDOS com o mesmo nome: prefere o do tipo certo
+            # (ex.: um .xlsx de verdade, não um HTML/Planilha Google com nome .xlsx).
+            certos = [a for a in arqs if nome.lower().endswith('.xlsx') and a.get('mimeType') == XLSX_MIME] \
+                or [a for a in arqs if not a.get('mimeType', '').startswith('application/vnd.google-apps')] or arqs
+            lista = '; '.join(f"{a['id']} ({a.get('mimeType')}, {a.get('size')} bytes, {a.get('modifiedTime')})"
+                              for a in arqs)
+            msg = f'Há {len(arqs)} arquivos chamados "{nome}" na pasta: {lista}. Usando {certos[0]["id"]}.'
+            print(f'⚠️ {msg}')
+            if os.environ.get('GITHUB_ACTIONS'):
+                print(f'::warning title=Arquivo repetido no Drive::{msg}')
+            return certos[0]
         return arqs[0] if arqs else None
 
     def achar(self, nome):
@@ -249,7 +261,8 @@ class PastaDrive:
         if nome.lower().endswith('.xlsx') and not conteudo.startswith(b'PK'):
             raise ValueError(f'"{nome}" no Drive não é um .xlsx válido '
                              f'({len(conteudo)} bytes, começa com {conteudo[:20]!r}). '
-                             'Está vazio ou é uma Planilha Google? Baixe como Excel e suba de novo.')
+                             f'Tipo no Drive: {a.get("mimeType")}, id {a["id"]}, modificado {a.get("modifiedTime")}. '
+                             'Está vazio, é uma Planilha Google ou outro arquivo com esse nome?')
         return buf
 
     def enviar(self, nome, buf, mime=XLSX_MIME):
