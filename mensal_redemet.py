@@ -16,6 +16,10 @@ Rebusca o mês inteiro na REDEMET, DIA A DIA, para os 21 aeródromos, e com isso
      Critérios: METAR atrasado com >= 5 min, SPECI com >= 15 min, COR com > 10 min
      (COR não entra no indicador). SBSP: ignora 02:01Z–08:59Z (AUTOMETAR).
 
+  2b) Gera "Relatorio_METAR_<AAAA>_<MM>.xlsx" (como o Colab "Quantidade
+     METAR/SPECI MENSAL"): METAR + SPECI do operador, AUTO, COR e % COR.
+     A "Soma Operador" é o número de mensagens da coluna D dos Indicadores.
+
   3) Gera "SBSP_AUTOMETAR_<MES><ANO>.xlsx": a estatística À PARTE do
      período AUTOMETAR de Congonhas (03Z..08Z): previstos, recebidos,
      atrasados, ausentes e alertas de consistência. Serve para confrontar o
@@ -30,6 +34,7 @@ Uso:
 import argparse
 import calendar
 import io
+import re
 import time
 from datetime import datetime
 
@@ -51,6 +56,10 @@ FRACAO_HORA_REGULAR = 0.9
 
 def nome_atrasos(ano, mes):
     return f'ATRASOS_METAR_SPECI_{ano}_{mes:02d}_FINAL.xlsx'
+
+
+def nome_quantidade(ano, mes):
+    return f'Relatorio_METAR_{ano}_{mes:02d}.xlsx'
 
 
 def nome_sbsp_auto(ano, mes):
@@ -224,6 +233,70 @@ def gerar_planilha_atrasos(tabelas, falhas):
 
 
 # ----------------------------------------------------------------------------
+# 2b) QUANTIDADE DE METAR/SPECI DO OPERADOR + % COR (Relatorio_METAR_AAAA_MM)
+#     Mesma regra do notebook "Quantidade METAR/SPECI MENSAL": ignora AUTO,
+#     conta 1 mensagem por horário (ddhhmmZ) — se veio COR, vale a COR.
+#     "Soma Operador" é o número de mensagens que vai para a coluna D.
+# ----------------------------------------------------------------------------
+AERO_DESTAQUE = ['SBCB', 'SBGL', 'SBGR', 'SBKP']   # destaque verde (como no Colab)
+
+
+def contar_operador(itens_aero, ano, mes, n_falhas=0):
+    unicas, n_auto, n_cor, ausencias = {}, 0, 0, n_falhas
+    for it in itens_aero:
+        texto = it.get('mens', '') or ''
+        dt = para_datahora(it.get('validade_inicial'))
+        if dt is not None and (dt.year != ano or dt.month != mes):
+            continue
+        if 'não localizada' in texto.lower():
+            ausencias += 1
+            continue
+        if ' AUTO ' in texto:
+            n_auto += 1
+            continue
+        if ' COR ' in texto:
+            n_cor += 1
+        m = re.search(r'(\d{6}Z)', texto)
+        if m:
+            tipo = 'METAR' if texto.startswith('METAR') else 'SPECI'
+            if m.group(1) not in unicas or ' COR ' in texto:
+                unicas[m.group(1)] = tipo
+    n_metar = list(unicas.values()).count('METAR')
+    n_speci = list(unicas.values()).count('SPECI')
+    soma = n_metar + n_speci
+    return {'METAR (Operador)': n_metar, 'SPECI (Operador)': n_speci, 'Soma Operador': soma,
+            'Mensagens AUTO': n_auto, 'Ausências/Falhas': ausencias, 'Mensagens COR': n_cor,
+            '% COR': (soma - n_cor) / soma if soma else 1.0}
+
+
+def gerar_relatorio_quantidade(itens, falhas, ano, mes):
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    linhas = [{'Aeroporto': a, **contar_operador(itens.get(a, []), ano, mes, len(falhas.get(a, [])))}
+              for a in AEROPORTOS]
+    df = pd.DataFrame(linhas)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        df.to_excel(w, index=False, sheet_name='Sheet1')
+        ws = w.sheets['Sheet1']
+        verde = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')
+        centro = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        borda = Border(*(Side(style='thin', color='D9D9D9'),) * 4)
+        for row in ws.iter_rows(min_row=1, max_row=len(df) + 1):
+            destaque = row[0].row > 1 and row[0].value in AERO_DESTAQUE
+            for c in row:
+                c.alignment, c.border = centro, borda
+                c.font = Font(name='Calibri', size=11, bold=(row[0].row == 1 or destaque))
+                if destaque:
+                    c.fill = verde
+                if c.column == 8 and c.row > 1:
+                    c.number_format = '0.00%'
+        for col, larg in zip('ABCDEFGH', (12, 18, 18, 16, 17, 17, 16, 10)):
+            ws.column_dimensions[col].width = larg
+    buf.seek(0)
+    return buf, df
+
+
+# ----------------------------------------------------------------------------
 # 3) SBSP — PERÍODO AUTOMETAR (relatório à parte)
 # ----------------------------------------------------------------------------
 def relatorio_sbsp_auto(df, ano, mes, dias_falhos):
@@ -343,6 +416,12 @@ def executar(ano, mes, pasta_cons, pasta_ind, forcar=False, buscar=buscar_redeme
     gravar_protegido(pasta_ind, nome_atrasos(ano, mes), buf, forcar)
     print(resumo[['Aeródromo', 'METAR atrasados', 'SPECI atrasados',
                   'METAR ausentes (provisório)', 'Total p/ indicador (coluna E)']].to_string(index=False))
+
+    # 2b) Quantidade do operador + % COR
+    buf_q, df_q = gerar_relatorio_quantidade(itens, falhas, ano, mes)
+    gravar_protegido(pasta_ind, nome_quantidade(ano, mes), buf_q, forcar)
+    print('\n🔢 Quantidade (operador) e % COR:')
+    print(df_q[['Aeroporto', 'Soma Operador', 'Mensagens COR', '% COR']].to_string(index=False))
 
     # 3) SBSP AUTOMETAR
     buf_sp, res_sp = relatorio_sbsp_auto(tabelas['SBSP'], ano, mes, set(falhas.get('SBSP', [])))

@@ -3,7 +3,9 @@
 Preenche a planilha "Indicadores de Meteorologia atualizada 2026.xlsx"
 (pasta Indicadores MET) com os números do mês, por aeródromo:
 
-    D  numero de mensagens      <- RESUMO da AUDITORIA_<MES><ANO> CONSISTÊNCIA.xlsx
+    D  numero de mensagens      <- "Soma Operador" do Relatorio_METAR_<AAAA>_<MM>.xlsx
+                                   (METAR+SPECI de operador, 1 por horário, COR vale);
+                                   se ele não existir, usa o RESUMO da AUDITORIA
     E  mensagens atrasadas      <- RESUMO do ATRASOS_METAR_SPECI_<AAAA>_<MM>_FINAL.xlsx
                                    (PROVISÓRIO, REDEMET: atrasadas + ausentes)
                                    depois substituído pelo DECEA (decea_relatorio.py)
@@ -77,6 +79,7 @@ def escrever(cell, valor, fonte, forcar=False):
         return 'igual'
     cell.value = valor
     descricao = {'AUDITORIA': 'auditoria de consistência (GitHub)',
+                 'CONTAGEM': 'METAR+SPECI de operador (Relatorio_METAR, REDEMET)',
                  'REDEMET': 'PROVISÓRIO — atrasos+ausências pela REDEMET',
                  'DECEA': 'OFICIAL — relatório do DECEA (atrasadas+ausentes, METAR+SPECI)'}[fonte]
     texto = (f'Preenchido pelo robô em {datetime.now(timezone.utc):%d/%m/%Y %H:%MZ}: {descricao}.\n'
@@ -145,6 +148,16 @@ def ler_resumo_auditoria(buf):
     return out
 
 
+def ler_quantidade(buf):
+    ws = openpyxl.load_workbook(buf, data_only=True).worksheets[0]
+    cab = [str(c.value or '').strip() for c in ws[1]]
+    if 'Soma Operador' not in cab:
+        return {}
+    i = cab.index('Soma Operador')
+    return {str(r[0]).upper(): {COL_D: int(r[i])} for r in ws.iter_rows(min_row=2, values_only=True)
+            if r[0] and r[i] is not None}
+
+
 def ler_resumo_atrasos(buf):
     ws = openpyxl.load_workbook(buf, data_only=True)['RESUMO']
     cab = [str(c.value or '') for c in ws[1]]
@@ -160,7 +173,7 @@ def ler_resumo_atrasos(buf):
 
 
 def executar(ano, mes, pasta_cons, pasta_ind, forcar=False):
-    from mensal_redemet import nome_atrasos
+    from mensal_redemet import nome_atrasos, nome_quantidade
     nome_aud = f'AUDITORIA_{nome_consistencia(ano, mes)}'
     if not pasta_ind.achar(NOME_PLANILHA_INDICADORES):
         print(f'❌ Planilha de indicadores não encontrada: {NOME_PLANILHA_INDICADORES}')
@@ -168,10 +181,21 @@ def executar(ano, mes, pasta_cons, pasta_ind, forcar=False):
     wb = openpyxl.load_workbook(pasta_ind.baixar(NOME_PLANILHA_INDICADORES))
     rel = []
 
+    contagem = {}
+    nome_q = nome_quantidade(ano, mes)
+    if pasta_ind.achar(nome_q):
+        contagem = ler_quantidade(pasta_ind.baixar(nome_q))
     if pasta_cons.achar(nome_aud):
-        rel += aplicar(wb, ler_resumo_auditoria(pasta_cons.baixar(nome_aud)), ano, mes, 'AUDITORIA', forcar)
+        aud = ler_resumo_auditoria(pasta_cons.baixar(nome_aud))
+        if contagem:   # D vem da contagem do operador; F da auditoria
+            for aero, cols in aud.items():
+                cols.pop(COL_D, None)
+            rel += aplicar(wb, contagem, ano, mes, 'CONTAGEM', forcar)
+        rel += aplicar(wb, aud, ano, mes, 'AUDITORIA', forcar)
     else:
-        print(f'⚠️ {nome_aud} não encontrada — D e F não atualizados.')
+        print(f'⚠️ {nome_aud} não encontrada — F não atualizado.')
+        if contagem:
+            rel += aplicar(wb, contagem, ano, mes, 'CONTAGEM', forcar)
 
     nome_atr = nome_atrasos(ano, mes)
     if pasta_ind.achar(nome_atr):
