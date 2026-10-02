@@ -21,6 +21,11 @@ on:
         type: boolean
         required: false
         default: false
+      so_final:
+        description: 'Só os passos 3-5 (Indicadores, DECEA, dashboard), sem rebuscar a REDEMET'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: drive-fab
@@ -53,9 +58,11 @@ jobs:
           pip install requests pandas openpyxl xlsxwriter google-api-python-client google-auth pdfplumber
 
       - name: 1) REDEMET - completar o mês, atrasos/ausências e SBSP AUTOMETAR
+        if: github.event.inputs.so_final != 'true'
         run: python mensal_redemet.py ${MES:+--mes "$MES"} $FORCAR
 
       - name: 2) Auditoria de consistência
+        if: github.event.inputs.so_final != 'true'
         run: python auditoria_metar.py ${MES:+--mes "$MES"} $FORCAR
 
       - name: 3) Planilha de Indicadores (D, E provisório, F)
