@@ -162,6 +162,7 @@ class PastaLocal:
         with open(os.path.join(self.caminho, nome), 'wb') as f:
             f.write(buf.read())
         print(f'💾 Salvo: {nome}')
+        return True
 
     def editado_pelo_usuario(self, nome):
         # No modo local não há como saber quem editou; quem roda à mão decide.
@@ -217,7 +218,8 @@ class PastaDrive:
         nome_q = nome.replace("'", "\\'")
         q = f"name = '{nome_q}' and '{self.folder_id}' in parents and trashed = false"
         r = self.svc.files().list(
-            q=q, fields='files(id,name,modifiedTime,lastModifyingUser(emailAddress,me))',
+            q=q, fields='files(id,name,size,md5Checksum,modifiedTime,appProperties,'
+                        'lastModifyingUser(emailAddress,me))',
             supportsAllDrives=True, includeItemsFromAllDrives=True,
         ).execute(num_retries=TENTATIVAS_DRIVE)
         arqs = r.get('files', [])
@@ -245,28 +247,54 @@ class PastaDrive:
         return self.baixar_id(fid)
 
     def enviar(self, nome, buf, mime=XLSX_MIME):
+        """Atualiza (ou cria) o arquivo. Devolve True se gravou.
+        Depois de gravar, guarda no arquivo a "assinatura" (md5) do que o robô
+        escreveu: se depois o md5 mudar, foi você que editou."""
+        from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaIoBaseUpload
         buf.seek(0)
         media = MediaIoBaseUpload(buf, mimetype=mime, resumable=True)
         fid = self.achar(nome)
-        if fid:
-            self.svc.files().update(fileId=fid, media_body=media, supportsAllDrives=True
-                                    ).execute(num_retries=TENTATIVAS_DRIVE)
-            print(f'♻️  Atualizado no Drive: {nome}')
-        else:
-            body = {'name': nome, 'parents': [self.folder_id]}
-            self.svc.files().create(body=body, media_body=media, fields='id',
-                                    supportsAllDrives=True).execute(num_retries=TENTATIVAS_DRIVE)
-            print(f'📁 Criado no Drive: {nome}')
+        try:
+            if fid:
+                r = self.svc.files().update(fileId=fid, media_body=media, fields='id,md5Checksum',
+                                            supportsAllDrives=True).execute(num_retries=TENTATIVAS_DRIVE)
+                print(f'♻️  Atualizado no Drive: {nome}')
+            else:
+                body = {'name': nome, 'parents': [self.folder_id]}
+                r = self.svc.files().create(body=body, media_body=media, fields='id,md5Checksum',
+                                            supportsAllDrives=True).execute(num_retries=TENTATIVAS_DRIVE)
+                print(f'📁 Criado no Drive: {nome}')
+        except HttpError as e:
+            if 'storageQuotaExceeded' in str(e) or 'do not have storage quota' in str(e):
+                msg = (f'O robô (conta de serviço) não pode CRIAR arquivo novo no seu Drive: "{nome}". '
+                       'Solução definitiva: configurar o secret GOOGLE_TOKEN (ver ROBOS_FAB.md). '
+                       'Paliativo: crie você um arquivo com esse nome exato na pasta que o robô passa a atualizá-lo.')
+                print(f'⚠️ {msg}')
+                if os.environ.get('GITHUB_ACTIONS'):
+                    print(f'::warning title=Arquivo não criado::{msg}')
+                return False
+            raise
+        try:
+            if r.get('md5Checksum'):
+                self.marcar(r['id'], 'robo_md5', r['md5Checksum'])
+        except Exception:
+            pass
+        return True
 
     def editado_pelo_usuario(self, nome):
-        """True se a última pessoa a mexer no arquivo NÃO foi o robô.
-        Serve para não apagar os ajustes manuais do Hiremar."""
+        """True se você mexeu no arquivo depois da última gravação do robô.
+        Serve para não apagar os seus ajustes manuais."""
         a = self._buscar(nome)
         if not a:
             return False
-        quem = a.get('lastModifyingUser') or {}
-        return not quem.get('me', False)
+        if str(a.get('size', '1')) == '0':
+            return False                      # arquivo vazio criado por você para o robô usar
+        robo = (a.get('appProperties') or {}).get('robo_md5')
+        if robo:
+            return robo != a.get('md5Checksum')
+        # arquivos antigos, sem assinatura: vale quem mexeu por último
+        return not (a.get('lastModifyingUser') or {}).get('me', False)
 
     def listar(self, contendo='', extensao=''):
         q = f"'{self.folder_id}' in parents and trashed = false"
@@ -289,11 +317,25 @@ class PastaDrive:
 
 
 def drive_service():
-    from google.oauth2 import service_account
+    """Conecta no Google Drive.
+    - Se existir o secret GOOGLE_TOKEN (autorização da SUA conta Google), usa
+      ele: o robô age como você e pode criar arquivos novos no Drive.
+    - Senão, usa a conta de serviço (GCP_SA_KEY): só consegue ATUALIZAR
+      arquivos que já existem (o Google não deixa ela criar no Drive pessoal)."""
     from googleapiclient.discovery import build
-    info = json.loads(os.environ['GCP_SA_KEY'])
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=['https://www.googleapis.com/auth/drive'])
+    escopo = ['https://www.googleapis.com/auth/drive']
+    token = os.environ.get('GOOGLE_TOKEN', '').strip()
+    if token:
+        from google.oauth2.credentials import Credentials
+        t = json.loads(token)
+        creds = Credentials(None, refresh_token=t['refresh_token'], client_id=t['client_id'],
+                            client_secret=t['client_secret'],
+                            token_uri='https://oauth2.googleapis.com/token', scopes=escopo)
+        print('🔑 Drive: usando a autorização da sua conta (GOOGLE_TOKEN).')
+    else:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(os.environ['GCP_SA_KEY']), scopes=escopo)
     return build('drive', 'v3', credentials=creds, cache_discovery=False)
 
 
