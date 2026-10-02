@@ -259,11 +259,44 @@ class PastaDrive:
         buf = self.baixar_id(a['id'])
         conteudo = buf.getvalue()
         if nome.lower().endswith('.xlsx') and not conteudo.startswith(b'PK'):
-            raise ValueError(f'"{nome}" no Drive não é um .xlsx válido '
-                             f'({len(conteudo)} bytes, começa com {conteudo[:20]!r}). '
-                             f'Tipo no Drive: {a.get("mimeType")}, id {a["id"]}, modificado {a.get("modifiedTime")}. '
-                             'Está vazio, é uma Planilha Google ou outro arquivo com esse nome?')
+            print(f'⚠️ "{nome}" no Drive não é um .xlsx válido ({len(conteudo)} bytes, começa com '
+                  f'{conteudo[:20]!r}). Procurando a última VERSÃO boa no histórico do arquivo...')
+            boa = self._ultima_versao_xlsx(a['id'])
+            if boa is None:
+                raise ValueError(f'"{nome}" está corrompido e não achei versão anterior válida. '
+                                 'No Drive: botão direito -> Gerenciar versões / Informações do arquivo.')
+            msg = (f'"{nome}" estava com conteúdo inválido (a versão atual é outro arquivo, '
+                   f'ex.: HTML). Usei a versão de {boa[1]} (por {boa[2]}); o robô vai regravar o arquivo certo.')
+            print(f'🩹 {msg}')
+            if os.environ.get('GITHUB_ACTIONS'):
+                print(f'::warning title=Planilha recuperada do histórico::{msg}')
+            return boa[0]
         return buf
+
+    def _ultima_versao_xlsx(self, file_id):
+        from googleapiclient.http import MediaIoBaseDownload
+        revs = self.svc.revisions().list(
+            fileId=file_id, fields='revisions(id,modifiedTime,size,mimeType,lastModifyingUser(displayName,emailAddress))',
+            pageSize=200).execute(num_retries=TENTATIVAS_DRIVE).get('revisions', [])
+        for rv in revs[-8:]:
+            quem = (rv.get('lastModifyingUser') or {})
+            print(f"   versão {rv['id']}: {rv.get('modifiedTime')} {rv.get('size')} bytes "
+                  f"por {quem.get('displayName') or quem.get('emailAddress')}")
+        for rv in reversed(revs):
+            try:
+                buf = io.BytesIO()
+                dl = MediaIoBaseDownload(buf, self.svc.revisions().get_media(fileId=file_id, revisionId=rv['id']))
+                feito = False
+                while not feito:
+                    _, feito = dl.next_chunk(num_retries=TENTATIVAS_DRIVE)
+            except Exception as e:
+                print(f"   (não consegui baixar a versão {rv['id']}: {e})")
+                continue
+            if buf.getvalue().startswith(b'PK'):
+                buf.seek(0)
+                quem = (rv.get('lastModifyingUser') or {})
+                return buf, rv.get('modifiedTime'), quem.get('displayName') or quem.get('emailAddress')
+        return None
 
     def enviar(self, nome, buf, mime=XLSX_MIME):
         """Atualiza (ou cria) o arquivo. Devolve True se gravou.
