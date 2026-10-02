@@ -241,10 +241,16 @@ class PastaDrive:
         return buf
 
     def baixar(self, nome):
-        fid = self.achar(nome)
-        if not fid:
+        a = self._buscar(nome)
+        if not a:
             raise FileNotFoundError(nome)
-        return self.baixar_id(fid)
+        buf = self.baixar_id(a['id'])
+        conteudo = buf.getvalue()
+        if nome.lower().endswith('.xlsx') and not conteudo.startswith(b'PK'):
+            raise ValueError(f'"{nome}" no Drive não é um .xlsx válido '
+                             f'({len(conteudo)} bytes, começa com {conteudo[:20]!r}). '
+                             'Está vazio ou é uma Planilha Google? Baixe como Excel e suba de novo.')
+        return buf
 
     def enviar(self, nome, buf, mime=XLSX_MIME):
         """Atualiza (ou cria) o arquivo. Devolve True se gravou.
@@ -438,7 +444,10 @@ def rodar(main):
         tb = traceback.format_exc()
         print(tb)
         if os.environ.get('GITHUB_ACTIONS'):
-            linhas = tb.strip().splitlines()[-12:]
+            todas = tb.strip().splitlines()
+            nossas = [l for i, l in enumerate(todas) if 'meteorologia-hiremar/' in l
+                      or (i > 0 and 'meteorologia-hiremar/' in todas[i - 1])]
+            linhas = nossas[-10:] + todas[-3:]
             msg = '%0A'.join(l.replace('%', '%25').replace('\r', '') for l in linhas)
             print(f'::error title=Falha no robô::{msg}')
         raise SystemExit(1)
