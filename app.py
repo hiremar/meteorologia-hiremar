@@ -195,7 +195,8 @@ if aba.startswith("🛰️"):
             try:
                 url_img, limites, instante = goes(canal)
                 folium.raster_layers.ImageOverlay(url_img, bounds=limites, opacity=0.85 if canal == "IR" else 0.95,
-                                                  name=f"{nome} {fmt_z(instante)}", interactive=False).add_to(m)
+                                                  name=f"{nome} {fmt_z(instante)}", interactive=False,
+                                                  pixelated=False).add_to(m)   # False = navegador suaviza no zoom
                 idade = int((datetime.now(timezone.utc) - instante).total_seconds() // 60)
                 chips.append((f"{nome}: {fmt_z(instante)} (há {idade} min)", idade > 30))
             except Exception as e:
