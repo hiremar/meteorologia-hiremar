@@ -136,9 +136,9 @@ if aba.startswith("🛰️"):
     ver_vis = st.sidebar.checkbox("Satélite visível (GOES-19 canal 2)", value=False,
                                   help="Só mostra nuvens durante o dia.")
     ver_sigmet = st.sidebar.checkbox("SIGMET", value=True)
-    ver_raios = st.sidebar.checkbox("Descargas atmosféricas (raios)", value=True)
-    periodo_raios = st.sidebar.radio("Raios a mostrar", ["Últimos 60 min", "Só a última informação"],
-                                     disabled=not ver_raios)
+    periodo_raios = st.sidebar.radio("Descargas atmosféricas (raios)",
+                                     ["Só a última informação", "Últimos 60 min", "Não mostrar"])
+    ver_raios = periodo_raios != "Não mostrar"      # True ou False, conforme a escolha
     ver_ads = st.sidebar.checkbox("Aeródromos das capitais", value=True)
     estilo = st.sidebar.radio("Mostrar aeródromos como", ["Etiquetas VFR/IFR (FAA)", "Bolinhas (cores REDEMET)"],
                               disabled=not ver_ads)

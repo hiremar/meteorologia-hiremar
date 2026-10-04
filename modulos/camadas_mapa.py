@@ -121,6 +121,20 @@ def legenda_categorias(estilo="FAA"):
 # ---------------------------------------------------------------------------
 # 3) SIGMET
 # ---------------------------------------------------------------------------
+def _cartao_sigmet(d):
+    """Cartão do clique no polígono: só a decodificação (sem coordenadas).
+    A mensagem original fica para o futuro PDF do planejamento de voo."""
+    linhas = [("FIR", d.get("fir")), ("Validade", d.get("validade")),
+              ("Fenômeno", d.get("fenomeno")),
+              ("Situação", d.get("situacao")), ("Níveis", d.get("niveis")),
+              ("Movimento", d.get("movimento"))]
+    corpo = "".join(f"<div><b>{rotulo}:</b> {html.escape(valor)}</div>"
+                    for rotulo, valor in linhas if valor)       # pula o que não veio na mensagem
+    return (f"<div style='border-left:5px solid {d['cor']};padding-left:8px;"
+            f"font:13px/1.5 Segoe UI,Arial,sans-serif'>"
+            f"<b style='color:{d['cor']};font-size:14px'>{html.escape(d['titulo'])}</b>{corpo}</div>")
+
+
 def adicionar_sigmets(m, textos):
     """Desenha os SIGMETs que têm polígono. Devolve a lista dos que NÃO puderam
     ser desenhados (ex.: 'N OF S20'), para o site listar em texto."""
@@ -133,8 +147,7 @@ def adicionar_sigmets(m, textos):
             folium.Polygon(
                 pts, color=cor, weight=2, fill=True, fill_opacity=0.22,
                 tooltip=f"SIGMET {fen} {rd.niveis_sigmet(txt)}",
-                popup=folium.Popup(f"<pre style='white-space:pre-wrap;font:12px monospace'>{html.escape(txt)}</pre>",
-                                   max_width=520),
+                popup=folium.Popup(_cartao_sigmet(rd.decodificar_sigmet(txt)), max_width=360),
             ).add_to(grupo)
         else:
             nao_desenhados.append(txt)

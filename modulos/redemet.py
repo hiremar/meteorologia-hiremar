@@ -113,6 +113,86 @@ def niveis_sigmet(texto):
 
 
 # ----------------------------------------------------------------------------
+# SIGMET -> decodificação em português (mesma lógica da Aula 9 do professor)
+# ----------------------------------------------------------------------------
+FIRS = {"SBAZ": "FIR Amazônica", "SBBS": "FIR Brasília", "SBCW": "FIR Curitiba",
+        "SBRE": "FIR Recife", "SBAO": "FIR Atlântico"}
+
+NOMES_FENOMENO = {"TS": "Trovoada", "ICE": "Gelo severo", "TURB": "Turbulência severa",
+                  "VA": "Cinzas vulcânicas", "OUTRO": "Outro fenômeno"}
+
+# Como a trovoada aparece (vêm antes de TS na mensagem)
+TIPOS_TS = {"OBSC": "obscurecida", "EMBD": "embutida", "FRQ": "frequente", "SQL": "em linha (SQL)"}
+
+DIRECOES = {"N": "norte", "NE": "nordeste", "E": "leste", "SE": "sudeste",
+            "S": "sul", "SW": "sudoeste", "W": "oeste", "NW": "noroeste"}
+
+
+def _validade(ddhhmm):
+    """'041933' -> 'dia 04 às 19:33Z'."""
+    return f"dia {ddhhmm[:2]} às {ddhhmm[2:4]}:{ddhhmm[4:]}Z"
+
+
+def decodificar_sigmet(texto):
+    """Transforma o SIGMET num dicionário com os campos em português.
+    As coordenadas ficam de fora de propósito: o polígono já está no mapa."""
+    t = " ".join(texto.upper().split())          # junta tudo numa linha, sem espaços duplos
+    d = {}
+
+    m = re.search(r"\bSIGMET\s+(\w+)", t)
+    d["titulo"] = f"SIGMET {m.group(1)}" if m else "SIGMET"
+
+    m = re.match(r"([A-Z]{4})\b", t)             # 1ª palavra = órgão / FIR
+    if m:
+        d["fir"] = f"{m.group(1)} – {FIRS.get(m.group(1), 'FIR')}"
+
+    m = re.search(r"\bVALID\s+(\d{6})/(\d{6})", t)
+    if m:
+        d["validade"] = f"de {_validade(m.group(1))} até {_validade(m.group(2))}"
+
+    fen, cor = fenomeno_sigmet(t)
+    nome = NOMES_FENOMENO[fen]
+    if fen == "TS":
+        tipo = re.search(r"\b(OBSC|EMBD|FRQ|SQL)\b", t)
+        if tipo:
+            nome += " " + TIPOS_TS[tipo.group(1)]
+        if re.search(r"\bTSGR\b", t):
+            nome += ", com granizo"
+    d["fenomeno"], d["cor"] = nome, cor
+    if re.search(r"\bOBS\b", t):
+        d["situacao"] = "Observado"
+    elif re.search(r"\bFCST\b", t):
+        d["situacao"] = "Previsto"
+
+    m = re.search(r"\b(?:SFC|FL(\d{3}))/(?:FL)?(\d{3})\b", t)
+    if m:
+        base = f"FL{m.group(1)}" if m.group(1) else "a superfície"
+        d["niveis"] = f"Entre {base} e FL{m.group(2)}"
+    else:
+        m = re.search(r"\bTOPS? (ABV )?FL(\d{3})", t)
+        if m:
+            d["niveis"] = f"Topo {'acima do' if m.group(1) else 'no'} FL{m.group(2)}"
+        else:
+            m = re.search(r"\b(ABV|BLW) FL(\d{3})", t)
+            if m:
+                d["niveis"] = f"{'Acima' if m.group(1) == 'ABV' else 'Abaixo'} do FL{m.group(2)}"
+
+    if re.search(r"\bSTNR\b", t):
+        mov = "Estacionário"
+    else:
+        m = re.search(r"\bMOV ([NSEW]{1,2}) (\d+)(KT|KMH)", t)
+        mov = (f"Deslocando-se para {DIRECOES.get(m.group(1), m.group(1))} a {int(m.group(2))} "
+               f"{'kt' if m.group(3) == 'KT' else 'km/h'}") if m else "Não informado"
+    if re.search(r"\bINTSF\b", t):
+        mov += " · intensificando"
+    elif re.search(r"\bWKN\b", t):
+        mov += " · enfraquecendo"
+    elif re.search(r"\bNC\b", t):
+        mov += " · sem mudança de intensidade"
+    d["movimento"] = mov
+    return d
+
+# ----------------------------------------------------------------------------
 # Descargas atmosféricas (raios) — produto STSC da REDEMET
 # ----------------------------------------------------------------------------
 URL_STSC = "https://api-redemet.decea.mil.br/produtos/stsc"
