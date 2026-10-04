@@ -44,6 +44,18 @@ AERODROMOS = [
     ("SDAM", "Campinas/Amarais",      "SP", -22.8592,  -47.1083),
     ("SDCO", "Sorocaba",              "SP", -23.4781,  -47.4900),
     ("SBJH", "São Roque/Catarina",    "SP", -23.4264,  -47.1656),
+    ("SBMT", "São Paulo/Campo de Marte", "SP", -23.5091, -46.6378),
+    ("SBST", "Santos (Base Aérea)",   "SP", -23.9281,  -46.2997),
+    ("SBSJ", "São José dos Campos",   "SP", -23.2292,  -45.8615),
+    ("SBTA", "Taubaté",               "SP", -23.0401,  -45.5160),
+    ("SBGW", "Guaratinguetá",         "SP", -22.7916,  -45.2048),
+    # --- região do Rio de Janeiro (CRCEA-SE) ---
+    ("SBAF", "Rio de Janeiro/Afonsos", "RJ", -22.8750, -43.3847),
+    ("SBJR", "Rio de Janeiro/Jacarepaguá", "RJ", -22.9875, -43.3700),
+    ("SBSC", "Rio de Janeiro/Santa Cruz", "RJ", -22.9324, -43.7191),
+    ("SBMI", "Maricá",                "RJ", -22.9196,  -42.8309),
+    ("SBES", "São Pedro da Aldeia",   "RJ", -22.8128,  -42.0926),
+    ("SBCB", "Cabo Frio",             "RJ", -22.9217,  -42.0743),
 ]
 
 # Dicionários de acesso rápido:  COORDS["SBGR"] -> [-23.4356, -46.4731]
