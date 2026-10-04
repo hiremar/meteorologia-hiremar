@@ -257,8 +257,9 @@ if aba.startswith("🛰️"):
         avisos += erros
         if ver_ads:
             cm.adicionar_aerodromos(m, metars, tafs, estilo, avisos_ad)
-            if avisos_ad:
-                chips.append((f"⚠ Aviso de aeródromo: {', '.join(sorted(avisos_ad))}", True))
+            no_mapa = sorted(i for i in avisos_ad if i in ad.LISTA_ICAO)   # só os que aparecem no mapa
+            if no_mapa:
+                chips.append((f"⚠ Aviso de aeródromo: {', '.join(no_mapa)}", True))
             cm.Legenda(cm.legenda_categorias(estilo), "bottomright").add_to(m)
 
     if plano:
