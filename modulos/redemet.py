@@ -193,6 +193,111 @@ def decodificar_sigmet(texto):
     return d
 
 # ----------------------------------------------------------------------------
+# Aviso de aeródromo (AD WRNG)
+# ----------------------------------------------------------------------------
+def _instante_ddhhmm(s, agora):
+    """'041930' -> datetime. A mensagem só traz dia/hora/minuto; o mês é o mais
+    próximo de hoje (resolve a virada do mês, ex.: dia 31 lido no dia 1º)."""
+    dd, hh, mm = int(s[:2]), int(s[2:4]), int(s[4:])
+    candidatos = []
+    for desloc in (-1, 0, 1):                 # mês passado, este mês, próximo mês
+        ano, mes = agora.year, agora.month + desloc
+        if mes == 0:
+            ano, mes = ano - 1, 12
+        elif mes == 13:
+            ano, mes = ano + 1, 1
+        try:
+            candidatos.append(datetime(ano, mes, dd, tzinfo=timezone.utc) + timedelta(hours=hh, minutes=mm))
+        except ValueError:                    # ex.: dia 31 num mês de 30 dias
+            pass
+    return min(candidatos, key=lambda c: abs(c - agora))
+
+
+PADRAO_AVISO = r"((?:[A-Z]{4}/)*[A-Z]{4}) AD WRNG (\w+) VALID (\d{6})/(\d{6})"
+
+
+def avisos_aerodromo(icaos, api_key):
+    """AD WRNG vigentes agora. Retorna ({"SBGR": [texto, ...], ...}, erro).
+    Um aviso pode valer para vários aeródromos (ex.: 'SBST/SBTA AD WRNG 20 ...')."""
+    try:
+        itens = _pedir(f"aviso/{','.join(icaos)}", api_key)
+    except Exception as e:
+        return {}, f"Aviso de aeródromo indisponível às {_agora_z()} ({_motivo(e)})"
+
+    agora = datetime.now(timezone.utc)
+    # { ... } com 'for' dentro cria um CONJUNTO (set): textos repetidos ficam só uma vez
+    textos = {" ".join((i.get("mens") or "").upper().split()) for i in itens}
+
+    # Avisos cancelados: '... CNL AD WRNG 2 ...' cancela o aviso nº 2 daquele aeródromo
+    cancelados = set()
+    for t in textos:
+        m = re.match(PADRAO_AVISO, t)
+        for numero in re.findall(r"\bCNL AD WRNG (\w+)", t):
+            if m:
+                cancelados.add((m.group(1), numero))
+
+    vigentes = {}
+    for t in textos:
+        m = re.match(PADRAO_AVISO, t)
+        if not m or re.search(r"\bCNL\b", t):
+            continue                          # não é aviso, ou é a própria mensagem de cancelamento
+        grupo, numero, ini, fim = m.groups()
+        if (grupo, numero) in cancelados:
+            continue
+        if not (_instante_ddhhmm(ini, agora) <= agora <= _instante_ddhhmm(fim, agora)):
+            continue                          # fora da validade
+        for icao in grupo.split("/"):
+            vigentes.setdefault(icao, []).append(t)
+    return vigentes, None
+
+
+FENOMENOS_AVISO = [   # (código, descrição) — na ordem em que vão aparecer
+    (r"\bTSGR\b", "trovoada com granizo"), (r"\bTS\b", "trovoada"), (r"\bGR\b", "granizo"),
+    (r"\bSQ\b", "tempestade (SQ)"), (r"\bTC\b", "ciclone tropical"),
+    (r"\bFZRA\b", "chuva congelante"), (r"\bFRST\b", "geada"), (r"\bHVY SN\b", "neve forte"),
+    (r"\bSN\b", "neve"), (r"\bSS\b", "tempestade de areia"), (r"\bDS\b", "tempestade de poeira"),
+    (r"\bVA\b", "cinzas vulcânicas"), (r"\bTOX CHEM\b", "produtos químicos tóxicos"),
+    (r"\bTSUNAMI\b", "tsunami"),
+]
+
+
+def decodificar_aviso(texto):
+    """'SBST/SBTA AD WRNG 20 VALID 041930/042330 TS SFC WSPD 15KT MAX 40 FCST NC='
+    -> ['Trovoada · vento à superfície 15 kt, rajadas até 40 kt',
+        'Previsto · sem mudança de intensidade', 'Válido de 04 19:30Z a 04 23:30Z']"""
+    t = " ".join(texto.upper().split())
+    itens = []
+    for padrao, nome in FENOMENOS_AVISO:
+        if re.search(padrao, t):
+            if nome == "trovoada" and "trovoada com granizo" in itens:
+                continue                      # TSGR já disse tudo
+            itens.append(nome)
+
+    m = re.search(r"\bSFC (?:WSPD |WIND (\d{3})/)(\d+)(KT|KMH)(?: MAX (\d+))?", t)
+    if m:
+        dirc, vel, uni, maxi = m.groups()
+        u = "kt" if uni == "KT" else "km/h"
+        vento = "vento à superfície" + (f" de {dirc}°" if dirc else "") + f" {int(vel)} {u}"
+        if maxi:
+            vento += f", rajadas até {int(maxi)} {u}"
+        itens.append(vento)
+
+    linhas = [(" · ".join(itens) or "fenômeno não identificado").capitalize()]
+
+    estado = "Observado" if re.search(r"\bOBS\b", t) else "Previsto" if re.search(r"\bFCST\b", t) else ""
+    tendencia = ("intensificando" if re.search(r"\bINTSF\b", t) else
+                 "enfraquecendo" if re.search(r"\bWKN\b", t) else
+                 "sem mudança de intensidade" if re.search(r"\bNC\b", t) else "")
+    if estado or tendencia:
+        linhas.append(" · ".join(x for x in (estado, tendencia) if x))
+
+    m = re.search(PADRAO_AVISO, t)
+    if m:
+        ini, fim = m.group(3), m.group(4)
+        linhas.append(f"Válido de {ini[:2]} {ini[2:4]}:{ini[4:]}Z a {fim[:2]} {fim[2:4]}:{fim[4:]}Z")
+    return linhas
+
+# ----------------------------------------------------------------------------
 # Descargas atmosféricas (raios) — produto STSC da REDEMET
 # ----------------------------------------------------------------------------
 URL_STSC = "https://api-redemet.decea.mil.br/produtos/stsc"
