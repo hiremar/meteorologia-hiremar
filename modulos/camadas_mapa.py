@@ -207,3 +207,41 @@ class CamadaModelo(Layer):
         self.grade = grade
         self.opcoes = {"tipo": tipo, "unidade": unidade, "titulo": titulo,
                        "escala": ESCALAS[chave_var], "espaco": 34}
+
+
+# ---------------------------------------------------------------------------
+# 6) Descargas atmosféricas (raios), desenhadas no navegador
+# ---------------------------------------------------------------------------
+with open(__file__.replace("camadas_mapa.py", "camada_raios.js"), encoding="utf-8") as _f:
+    _JS_RAIOS = _f.read()
+
+
+class CamadaRaios(Layer):
+    """Mesma ideia da CamadaModelo: os pontos vão embutidos na página e o
+    navegador desenha os raios num canvas (leve mesmo com milhares de pontos)."""
+
+    _template = Template("""
+        {% macro header(this, kwargs) %}
+            <script>{{ this.js }}</script>
+        {% endmacro %}
+        {% macro script(this, kwargs) %}
+            var {{ this.get_name() }} = new L.CamadaRaios(
+                {{ this.pontos|tojson }}, {{ this.opcoes|tojson }});
+            {{ this.get_name() }}.addTo({{ this._parent.get_name() }});
+        {% endmacro %}
+    """)
+
+    def __init__(self, pontos, name="Descargas atmosféricas"):
+        super().__init__(name=name, overlay=True, control=True, show=False)
+        self._name = "CamadaRaios"
+        self.js = _JS_RAIOS
+        self.pontos = pontos                                  # [[lat, lon, faixa], ...]
+        self.opcoes = {"cores": [cor for _, cor, _ in rd.FAIXAS_RAIOS]}
+
+
+def legenda_raios():
+    """Legenda igual à da aba TSC da REDEMET (mesmas faixas e cores)."""
+    raio = ("<svg width='12' height='14' viewBox='-0.5 -0.6 1 1.2' style='vertical-align:middle'>"
+            "<path d='M.1-.5-.3.05H0L-.15.5.3-.1H.02L.22-.5Z' fill='{}' stroke='#000' stroke-width='.06'/></svg>")
+    itens = "<br>".join(f"{raio.format(cor)} {texto}" for _, cor, texto in rd.FAIXAS_RAIOS)
+    return f"<div class='legenda-mapa'><b>Raios</b><br>{itens}</div>"
