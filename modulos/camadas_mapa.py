@@ -54,6 +54,16 @@ CSS_MAPA = """
  .msg-tip b.t {color:#f1c40f; font-family:'Segoe UI',Arial,sans-serif}
  .msg-tip pre {white-space:pre-wrap; margin:2px 0 6px; font:inherit; color:#bdf5c4}
  .msg-tip .sub {color:#9fb3c4; font-family:'Segoe UI',Arial,sans-serif; font-size:11px}
+ /* Aviso de aeródromo: anel branco + preto e um halo âmbar que "respira" devagar.
+    É animação de CSS: quem trabalha é a placa de vídeo, o site não fica mais lento. */
+ .cat.aviso, .bol.aviso {box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000; animation: pulso-aviso 2.4s ease-in-out infinite}
+ @keyframes pulso-aviso {
+   0%, 100% {box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000, 0 0 0 4px rgba(255,190,0,0)}
+   50%      {box-shadow: 0 0 0 2px #fff, 0 0 0 4px #000, 0 0 0 10px rgba(255,190,0,.55)}
+ }
+ @media (prefers-reduced-motion: reduce) { .aviso {animation: none} }   /* quem pediu "menos movimento" no aparelho */
+ .msg-tip .adw {color:#ffd666; font-family:'Segoe UI',Arial,sans-serif; font-weight:700; margin-top:2px}
+ .msg-tip .adw-d {color:#ffe9a8; font-family:'Segoe UI',Arial,sans-serif}
  .legenda-mapa {background:rgba(13,27,40,.9); color:#e8eef3; padding:6px 8px; border-radius:6px;
        font:11px/1.3 'Segoe UI',Arial,sans-serif; box-shadow:0 1px 6px rgba(0,0,0,.5)}
  .legenda-mapa .barra {height:10px; width:240px; border-radius:2px; margin:4px 0 2px}
@@ -63,16 +73,20 @@ CSS_MAPA = """
 """
 
 
-def _tooltip_html(icao, metar, taf, info):
+def _tooltip_html(icao, metar, taf, info, avisos=()):
     idade = "" if info is None or info["idade_min"] is None else f" · há {info['idade_min']} min"
     partes = [f"<b class='t'>{icao}</b> <span class='sub'>{html.escape(NOMES.get(icao, ''))}{idade}</span>"]
+    for aviso in avisos:                       # o aviso vem primeiro: é o mais importante
+        partes.append("<div class='adw'>⚠ AVISO DE AERÓDROMO</div>")
+        partes += [f"<div class='adw-d'>{html.escape(linha)}</div>" for linha in rd.decodificar_aviso(aviso)]
+        partes.append(f"<pre>{html.escape(aviso)}</pre>")
     partes.append(f"<pre>{html.escape(metar) if metar else 'METAR não disponível'}</pre>")
     if taf:
         partes.append(f"<pre>{html.escape(mt.formatar_taf(taf))}</pre>")
     return "".join(partes)
 
 
-def adicionar_aerodromos(m, metars, tafs, estilo="FAA"):
+def adicionar_aerodromos(m, metars, tafs, estilo="FAA", avisos=None):
     """estilo 'FAA' = etiquetas VFR/MVFR/IFR/LIFR ; 'REDEMET' = bolinhas coloridas."""
     grupo = folium.FeatureGroup(name="Aeródromos (capitais)", show=True)
     for icao, _, _, lat, lon in AERODROMOS:
@@ -80,6 +94,8 @@ def adicionar_aerodromos(m, metars, tafs, estilo="FAA"):
         taf = (tafs.get(icao) or {}).get("mens", "")
         info = mt.analisar(metar) if metar else None
         velho = " velho" if (info is None or info["antigo"]) else ""
+        avs = (avisos or {}).get(icao, [])
+        velho += " aviso" if avs else ""        # a classe 'aviso' liga o anel pulsante do CSS
         if estilo == "FAA":
             chave = info["faa"] if info else "ND"
             texto, fundo, cor = mt.CATEGORIAS_FAA[chave]
@@ -95,9 +111,10 @@ def adicionar_aerodromos(m, metars, tafs, estilo="FAA"):
         # aeroportos vizinhos (SBGL/SBRJ, SBSP/SBGR) se sobrepõem no zoom baixo:
         # o pior tempo fica por cima, para nunca ficar escondido
         gravidade = {"LIFR": 4, "VERMELHO": 4, "IFR": 3, "AMARELO": 3, "MVFR": 2}.get(chave, 1)
+        gravidade += 5 if avs else 0             # com aviso, fica por cima de todos
         folium.Marker(
             [lat, lon], icon=icone, z_index_offset=gravidade * 1000,
-            tooltip=folium.Tooltip(_tooltip_html(icao, metar, taf, info), sticky=True, class_name="msg-tip"),
+            tooltip=folium.Tooltip(_tooltip_html(icao, metar, taf, info, avs), sticky=True, class_name="msg-tip"),
         ).add_to(grupo)
     grupo.add_to(m)
 
@@ -115,7 +132,9 @@ def legenda_categorias(estilo="FAA"):
             f"<span class='bol' style='display:inline-block;vertical-align:middle;background:{f}'></span> {nomes[k]}"
             for k, (_, f, _) in mt.CATEGORIAS_REDEMET.items())
         nota = "critério das cores da REDEMET. Vazada = METAR com mais de 90 min."
-    return f"<div class='legenda-mapa'>{itens}<div style='margin-top:4px;color:#9fb3c4'>{nota}</div></div>"
+    anel = ("<div style='margin-top:6px'><span class='bol aviso' style='display:inline-block;vertical-align:middle;"
+            "background:#888;animation:none'></span>&nbsp; anel = aviso de aeródromo (AD WRNG) vigente</div>")
+    return f"<div class='legenda-mapa'>{itens}{anel}<div style='margin-top:4px;color:#9fb3c4'>{nota}</div></div>"
 
 
 # ---------------------------------------------------------------------------

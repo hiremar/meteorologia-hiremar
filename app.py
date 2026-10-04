@@ -84,7 +84,8 @@ def goes(canal):
 def metars_e_tafs(chave):
     metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
     tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_ICAO, chave)
-    return metars, tafs, [e for e in (e1, e2) if e]
+    avisos, e3 = rd.avisos_aerodromo(ad.LISTA_ICAO, chave)
+    return metars, tafs, avisos, [e for e in (e1, e2, e3) if e]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -252,10 +253,12 @@ if aba.startswith("🛰️"):
                 else:
                     chips.append(("Raios: nenhuma descarga informada", False))
 
-        metars, tafs, erros = metars_e_tafs(api_key)
+        metars, tafs, avisos_ad, erros = metars_e_tafs(api_key)
         avisos += erros
         if ver_ads:
-            cm.adicionar_aerodromos(m, metars, tafs, estilo)
+            cm.adicionar_aerodromos(m, metars, tafs, estilo, avisos_ad)
+            if avisos_ad:
+                chips.append((f"⚠ Aviso de aeródromo: {', '.join(sorted(avisos_ad))}", True))
             cm.Legenda(cm.legenda_categorias(estilo), "bottomright").add_to(m)
 
     if plano:
@@ -304,6 +307,10 @@ if aba.startswith("🛰️"):
                     f"<div class='cartao-titulo'>{papel}: {icao}"
                     f"<span class='cat-chip' style='background:{fundo};color:{cor}'>{texto}</span></div>"
                     f"<div class='rotulo'>{html.escape(ad.NOMES.get(icao, ''))}{idade}</div>"
+                    + "".join(f"<div class='rotulo' style='color:#ffd666'>⚠ AVISO DE AERÓDROMO</div>"
+                              f"<div class='msg' style='border-left-color:#ffbe00;color:#ffe9a8'>"
+                              f"{html.escape(' · '.join(rd.decodificar_aviso(a)))}</div>"
+                              for a in avisos_ad.get(icao, [])) +
                     f"<div class='rotulo'>METAR</div><div class='msg'>{html.escape(metar or 'não disponível')}</div>"
                     f"<div class='rotulo'>TAF</div><div class='msg taf'>"
                     f"{html.escape(mt.formatar_taf(taf) if taf else 'não disponível')}</div>",
