@@ -105,6 +105,18 @@ def modelo(horas_a_frente, hora_cheia_utc):
     return gfs.ler_grib(conteudo), info
 
 
+# Cartas do GeoAISWEB: { nome da camada no servidor: texto no menu }.
+# Para acrescentar uma WAC, copie o nome exato da lista do GeoAISWEB (ex.: WAC_3262_SAO_PAULO).
+WACS = ["WAC_3140_BRASILIA", "WAC_3141_SALVADOR", "WAC_3189_BELO_HORIZONTE", "WAC_3190_GOIANIA",
+        "WAC_3191_RONDONOPOLIS", "WAC_3192_CORUMBA", "WAC_3260_BELA_VISTA", "WAC_3261_CAMPO_GRANDE",
+        "WAC_3262_SAO_PAULO", "WAC_3263_RIO_DE_JANEIRO", "WAC_3313_CURITIBA", "WAC_3314_FOZ_DO_IGUACU",
+        "WAC_3383_URUGUAIANA", "WAC_3384_PORTO_ALEGRE", "WAC_3434_RIO_DA_PRATA"]
+CARTAS = {"": "Nenhuma"}
+CARTAS.update({f"ENRC_L{i}": f"ENRC baixa L{i}" for i in range(1, 10)})
+CARTAS.update({f"ENRC_H{i}": f"ENRC alta H{i}" for i in range(1, 10)})
+CARTAS.update({w: "WAC " + w[4:8] + " · " + w[9:].replace("_", " ").title() for w in WACS})
+
+
 def fmt_z(dt):
     return dt.strftime("%d/%m %H:%MZ") if dt else "?"
 
@@ -156,9 +168,11 @@ if aba.startswith("🛰️"):
         horas = st.sidebar.select_slider("Validade", options=[0, 3, 6, 9, 12, 18, 24],
                                          format_func=lambda h: "agora" if h == 0 else f"+{h} h")
 
-    with st.sidebar.expander("🗺️ Cartas ENRC (DECEA)"):
-        cartas = (st.multiselect("Cartas de baixa (L)", [f"L{i}" for i in range(1, 10)]) +
-                  st.multiselect("Cartas de alta (H)", [f"H{i}" for i in range(1, 10)]))
+    # Cartas do GeoAISWEB (DECEA). Uma de cada vez: escolher outra tira a anterior,
+    # assim uma carta nunca fica por cima da outra.
+    with st.sidebar.expander("🗺️ Cartas aeronáuticas (DECEA)"):
+        carta = st.selectbox("Carta", list(CARTAS), format_func=lambda k: CARTAS[k],
+                             help="Só uma carta por vez. Fonte: GeoAISWEB/DECEA.")
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
     st.sidebar.subheader("📍 Planejamento de voo")
@@ -193,9 +207,9 @@ if aba.startswith("🛰️"):
     m.get_root().header.add_child(folium.Element(cm.CSS_MAPA))
     cm.adicionar_mapas_fundo(m)
 
-    for carta in cartas:
-        folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=f"ICA:ENRC_{carta}",
-                            fmt="image/png", transparent=True, name=f"Carta {carta}", overlay=True).add_to(m)
+    if carta:                                   # "" = nenhuma carta escolhida
+        folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=f"ICA:{carta}",
+                            fmt="image/png", transparent=True, name=CARTAS[carta], overlay=True).add_to(m)
 
     with st.spinner("Carregando satélite, mensagens e modelo..."):
         for canal, ligado, nome in (("IR", ver_ir, "GOES-19 IR (canal 13)"), ("VIS", ver_vis, "GOES-19 visível (canal 2)")):

@@ -38,6 +38,12 @@ AERODROMOS = [
     ("SBPJ", "Palmas",                "TO", -10.2915,  -48.3570),
     # extras (não são capitais, mas são muito usados)
     ("SBKP", "Campinas/Viracopos",    "SP", -23.0074,  -47.1345),
+    # --- região de São Paulo (coordenadas aproximadas; conferir no AISWEB se precisar) ---
+    ("SBBP", "Bragança Paulista",     "SP", -22.9792,  -46.5375),
+    ("SBJD", "Jundiaí",               "SP", -23.1817,  -46.9436),
+    ("SDAM", "Campinas/Amarais",      "SP", -22.8592,  -47.1083),
+    ("SDCO", "Sorocaba",              "SP", -23.4781,  -47.4900),
+    ("SBJH", "São Roque/Catarina",    "SP", -23.4264,  -47.1656),
 ]
 
 # Dicionários de acesso rápido:  COORDS["SBGR"] -> [-23.4356, -46.4731]
