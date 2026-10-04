@@ -145,29 +145,37 @@ aba = st.sidebar.radio("Ir para:", ["🛰️ Briefing em tempo real", "📺 Aula
 # ============================================================================
 if aba.startswith("🛰️"):
     # ---------------- barra lateral ----------------
+    # Cada grupo fica numa "aba" que abre e fecha (st.sidebar.expander). Tudo que está
+    # dentro do "with" vai para dentro da aba; fechada, a barra lateral fica limpa.
+    # (os valores marcados continuam valendo mesmo com a aba fechada)
     st.sidebar.subheader("📡 Camadas")
-    ver_ir = st.sidebar.checkbox("Satélite infravermelho (GOES-19 canal 13)", value=True)
-    ver_vis = st.sidebar.checkbox("Satélite visível (GOES-19 canal 2)", value=False,
-                                  help="Só mostra nuvens durante o dia.")
-    ver_sigmet = st.sidebar.checkbox("SIGMET", value=True)
-    periodo_raios = st.sidebar.radio("Descargas atmosféricas (raios)",
-                                     ["Só a última informação", "Últimos 60 min", "Não mostrar"])
-    ver_raios = periodo_raios != "Não mostrar"      # True ou False, conforme a escolha
-    ver_ads = st.sidebar.checkbox("Aeródromos das capitais", value=True)
-    estilo = st.sidebar.radio("Mostrar aeródromos como", ["Etiquetas VFR/IFR (FAA)", "Bolinhas (cores REDEMET)"],
-                              disabled=not ver_ads)
-    estilo = "FAA" if estilo.startswith("Etiquetas") else "REDEMET"
+    with st.sidebar.expander("🛰️ Satélite"):
+        ver_ir = st.checkbox("Infravermelho (GOES-19 canal 13)", value=True)
+        ver_vis = st.checkbox("Visível (GOES-19 canal 2)", value=False, help="Só mostra nuvens durante o dia.")
 
-    ver_modelo = st.sidebar.checkbox("Modelo GFS (vento, temperatura)", value=False)
-    if ver_modelo:
-        chave_var = st.sidebar.selectbox("Variável", list(gfs.VARIAVEIS),
-                                         format_func=lambda k: gfs.VARIAVEIS[k]["nome"])
-        # temperatura só existe nos níveis de pressão (a de superfície fica para depois)
-        niveis = [r for r, (tipo, _) in gfs.NIVEIS.items()
-                  if tipo == "iso" or gfs.VARIAVEIS[chave_var]["tipo"] == "vetor"]
-        rotulo_nivel = st.sidebar.selectbox("Nível", niveis, index=niveis.index("FL180 · 500 hPa"))
-        horas = st.sidebar.select_slider("Validade", options=[0, 3, 6, 9, 12, 18, 24],
-                                         format_func=lambda h: "agora" if h == 0 else f"+{h} h")
+    with st.sidebar.expander("⚡ SIGMET e raios"):
+        ver_sigmet = st.checkbox("SIGMET", value=True)
+        periodo_raios = st.radio("Descargas atmosféricas (raios)",
+                                 ["Só a última informação", "Últimos 60 min", "Não mostrar"])
+        ver_raios = periodo_raios != "Não mostrar"      # True ou False, conforme a escolha
+
+    with st.sidebar.expander("✈️ Aeródromos"):
+        ver_ads = st.checkbox("Mostrar aeródromos", value=True)
+        estilo = st.radio("Mostrar como", ["Etiquetas VFR/IFR (FAA)", "Bolinhas (cores REDEMET)"],
+                          disabled=not ver_ads)
+        estilo = "FAA" if estilo.startswith("Etiquetas") else "REDEMET"
+
+    with st.sidebar.expander("🌬️ Modelo GFS (vento, temperatura)"):
+        ver_modelo = st.checkbox("Mostrar modelo GFS", value=False)
+        if ver_modelo:
+            chave_var = st.selectbox("Variável", list(gfs.VARIAVEIS),
+                                     format_func=lambda k: gfs.VARIAVEIS[k]["nome"])
+            # temperatura só existe nos níveis de pressão (a de superfície fica para depois)
+            niveis = [r for r, (tipo, _) in gfs.NIVEIS.items()
+                      if tipo == "iso" or gfs.VARIAVEIS[chave_var]["tipo"] == "vetor"]
+            rotulo_nivel = st.selectbox("Nível", niveis, index=niveis.index("FL180 · 500 hPa"))
+            horas = st.select_slider("Validade", options=[0, 3, 6, 9, 12, 18, 24],
+                                     format_func=lambda h: "agora" if h == 0 else f"+{h} h")
 
     # Cartas do GeoAISWEB (DECEA), em duas partes separadas.
     with st.sidebar.expander("🗺️ Cartas de rota ENRC (DECEA)"):
@@ -179,8 +187,9 @@ if aba.startswith("🛰️"):
                               help="A WAC fica por cima da ENRC na área dela.")
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
-    st.sidebar.subheader("📍 Planejamento de voo")
-    with st.sidebar.form("planejamento"):
+    # A aba do planejamento já vem ABERTA quando há um plano ativo (expanded=...).
+    aba_plano = st.sidebar.expander("📍 Planejamento de voo", expanded=bool(st.session_state.get("plano")))
+    with aba_plano.form("planejamento"):
         opcoes = ad.LISTA_ICAO
         origem = st.selectbox("Origem", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
         destino = st.selectbox("Destino", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
@@ -191,8 +200,8 @@ if aba.startswith("🛰️"):
         if origem and destino:
             st.session_state["plano"] = [origem, destino, altn]
         else:
-            st.sidebar.warning("Escolha pelo menos origem e destino.")
-    if st.session_state.get("plano") and st.sidebar.button("Limpar planejamento"):
+            aba_plano.warning("Escolha pelo menos origem e destino.")
+    if st.session_state.get("plano") and aba_plano.button("Limpar planejamento"):
         del st.session_state["plano"]
         st.rerun()
     plano = st.session_state.get("plano")
