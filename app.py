@@ -92,6 +92,11 @@ def lista_sigmets(chave):
     return rd.sigmets(chave)
 
 
+@st.cache_data(ttl=300, show_spinner=False)          # 5 min: no máximo 1 consulta à REDEMET a cada 5 min
+def raios(chave):
+    return rd.descargas(chave)
+
+
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=4)   # 1 h
 def modelo(horas_a_frente, hora_cheia_utc):
     # 'hora_cheia_utc' só serve para renovar o cache quando muda a hora
@@ -131,6 +136,9 @@ if aba.startswith("🛰️"):
     ver_vis = st.sidebar.checkbox("Satélite visível (GOES-19 canal 2)", value=False,
                                   help="Só mostra nuvens durante o dia.")
     ver_sigmet = st.sidebar.checkbox("SIGMET", value=True)
+    ver_raios = st.sidebar.checkbox("Descargas atmosféricas (raios)", value=True)
+    periodo_raios = st.sidebar.radio("Raios a mostrar", ["Últimos 60 min", "Só a última informação"],
+                                     disabled=not ver_raios)
     ver_ads = st.sidebar.checkbox("Aeródromos das capitais", value=True)
     estilo = st.sidebar.radio("Mostrar aeródromos como", ["Etiquetas VFR/IFR (FAA)", "Bolinhas (cores REDEMET)"],
                               disabled=not ver_ads)
@@ -223,6 +231,26 @@ if aba.startswith("🛰️"):
             else:
                 nao_desenhados = cm.adicionar_sigmets(m, textos)
                 chips.append((f"{len(textos)} SIGMET vigente(s)", False))
+
+        if ver_raios:
+            quadros, erro = raios(api_key)
+            if erro:
+                avisos.append(erro)
+            else:
+                if periodo_raios.startswith("Só") and quadros:
+                    mais_novo = max(inst for inst, _ in quadros)
+                    quadros = [(inst, pts) for inst, pts in quadros if inst == mais_novo]
+                agora = datetime.now(timezone.utc)
+                pontos = rd.pontos_por_idade(quadros, agora)
+                cm.CamadaRaios(pontos).add_to(m)
+                cm.Legenda(cm.legenda_raios(), "bottomleft").add_to(m)
+                if quadros:
+                    ultimo = max(inst for inst, _ in quadros)
+                    idade = int((agora - ultimo).total_seconds() // 60)
+                    chips.append((f"Raios: {len(pontos)} ponto(s), último {fmt_z(ultimo)} (há {idade} min)",
+                                  idade > 20))
+                else:
+                    chips.append(("Raios: nenhuma descarga informada", False))
 
         metars, tafs, erros = metars_e_tafs(api_key)
         avisos += erros

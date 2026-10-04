@@ -6,7 +6,7 @@ Se deu errado, 'erro' traz um texto curto que o site mostra na tela
 "não há SIGMET" com "não consegui consultar".
 """
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -110,3 +110,81 @@ def niveis_sigmet(texto):
     """Extrai a faixa de níveis, ex.: 'FL250/380', 'SFC/FL100', 'TOP FL400'."""
     m = re.search(r"\b((?:SFC|FL\d{3})/(?:FL)?\d{3}|TOP (?:ABV )?FL\d{3}|ABV FL\d{3}|BLW FL\d{3})\b", texto)
     return m.group(1) if m else ""
+
+
+# ----------------------------------------------------------------------------
+# Descargas atmosféricas (raios) — produto STSC da REDEMET
+# ----------------------------------------------------------------------------
+URL_STSC = "https://api-redemet.decea.mil.br/produtos/stsc"
+
+# Faixas de idade iguais às da aba TSC da REDEMET: (idade máxima em min, cor, texto)
+FAIXAS_RAIOS = [(15, "#ff1a1a", "0 a 15 min"),
+                (30, "#ffe600", "15 a 30 min"),
+                (45, "#1db31d", "30 a 45 min"),
+                (60, "#1f4dff", "45 a 60 min")]
+
+
+def _instante(hhmm, agora):
+    """A API só manda a hora ('19:41'). Junta com a data de hoje (UTC).
+    Se a hora ficou "no futuro" (ex.: '23:58' lido às 00:03Z), era de ontem."""
+    h, m = re.search(r"(\d{1,2}):(\d{2})", hhmm).groups()
+    inst = agora.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+    if inst > agora + timedelta(minutes=5):
+        inst -= timedelta(days=1)
+    return inst
+
+
+def _pedir_stsc(api_key, quadros):
+    """Pede as últimas 'quadros' fotografias de raios.
+    Devolve [(instante, [[lat, lon], ...]), ...]."""
+    r = requests.get(URL_STSC, params={"api_key": api_key, "anima": quadros}, timeout=TIMEOUT)
+    r.raise_for_status()
+    js = r.json()
+    if js.get("status") is False:
+        raise RecusaAPI(str(js.get("message", "recusado pela API"))[:120])
+    dados = js.get("data") or {}
+    agora = datetime.now(timezone.utc)
+    resultado = []
+    # zip junta as duas listas lado a lado: 1º horário com a 1ª lista de pontos, e assim por diante
+    for hhmm, lista in zip(dados.get("anima") or [], dados.get("stsc") or []):
+        pontos = []
+        for p in lista or []:
+            try:
+                pontos.append([round(float(p["la"]), 2), round(float(p["lo"]), 2)])
+            except (KeyError, TypeError, ValueError):
+                continue                      # ponto com defeito: ignora só ele
+        resultado.append((_instante(hhmm, agora), pontos))
+    return resultado
+
+
+def descargas(api_key):
+    """Raios da última hora. Retorna ([(instante, pontos), ...], erro).
+
+    Não sabemos de antemão de quantos em quantos minutos a REDEMET gera cada
+    fotografia. Então pedimos 4, medimos o intervalo entre elas e, se for menor
+    que 15 min, pedimos de novo a quantidade que cobre 60 min."""
+    try:
+        quadros = _pedir_stsc(api_key, 4)
+        if len(quadros) >= 2:
+            instantes = sorted(q[0] for q in quadros)
+            passo = (instantes[1] - instantes[0]).total_seconds() / 60    # em minutos
+            if 0 < passo < 15:
+                quadros = _pedir_stsc(api_key, min(60, int(60 // passo) + 1))
+        return quadros, None
+    except Exception as e:
+        return [], f"Descargas atmosféricas indisponíveis às {_agora_z()} ({_motivo(e)})"
+
+
+def pontos_por_idade(quadros, agora):
+    """Transforma as fotografias em [[lat, lon, faixa], ...], com faixa 0 = vermelho
+    (até 15 min) ... 3 = azul (até 60 min). Mais de 60 min fica de fora.
+    A idade é calculada AGORA (e não quando os dados foram baixados): assim,
+    mesmo com o cache, a cor mostra a idade real do raio."""
+    saida = []
+    for instante, pontos in quadros:
+        idade = (agora - instante).total_seconds() / 60
+        if idade > 60:
+            continue
+        faixa = min(int(max(idade, 0) // 15), 3)
+        saida += [[lat, lon, faixa] for lat, lon in pontos]
+    return saida
