@@ -50,7 +50,7 @@ def _pedir_paginas(caminho, api_key, extras=None, max_paginas=6):
     páginas ('last_page' diz quantas); ler só a primeira esconde as mensagens do resto."""
     todas, anterior = [], None
     for pagina in range(1, max_paginas + 1):
-        params = {"api_key": api_key, "page_tam": 150, "pagina": pagina, **(extras or {})}
+        params = {"api_key": api_key, "page_tam": 150, "page": pagina, **(extras or {})}
         r = requests.get(f"{URL}/{caminho}", params=params, timeout=TIMEOUT)
         r.raise_for_status()
         js = r.json()
@@ -248,7 +248,12 @@ def avisos_aerodromo(icaos, api_key):
     Um aviso pode valer para vários aeródromos (ex.: 'SBST/SBTA AD WRNG 20 ...').
     'diagnostico' lista TODA mensagem recebida e o que fizemos com ela (para conferência)."""
     try:
-        itens = _pedir_paginas(f"aviso/{','.join(icaos)}", api_key)
+        # Sem datas, a API só olha a HORA ATUAL e perde avisos emitidos antes (ex.: o das 19:30Z
+        # consultado às 21Z). Pedimos as últimas 12 h; os vencidos o código descarta mais abaixo.
+        agora = datetime.now(timezone.utc)
+        janela = {"data_ini": (agora - timedelta(hours=12)).strftime("%Y%m%d%H"),
+                  "data_fim": agora.strftime("%Y%m%d%H")}
+        itens = _pedir_paginas(f"aviso/{','.join(icaos)}", api_key, janela)
     except Exception as e:
         return {}, f"Aviso de aeródromo indisponível às {_agora_z()} ({_motivo(e)})", []
 
@@ -259,7 +264,7 @@ def avisos_aerodromo(icaos, api_key):
     for i in itens:
         t = " ".join((i.get("mens") or "").upper().split())
         if t:
-            por_texto.setdefault(t, set()).add((i.get("id_localidade") or "?").upper())
+            por_texto.setdefault(t, set()).add((i.get("id_localidade") or i.get("id_fir") or "?").upper())
 
     # Avisos cancelados: '... CNL AD WRNG 2 ...' cancela o aviso nº 2 daquele grupo
     cancelados = set()
