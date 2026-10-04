@@ -45,6 +45,29 @@ def _pedir(caminho, api_key, extras=None):
     return (js.get("data") or {}).get("data") or []
 
 
+def _pedir_paginas(caminho, api_key, extras=None, max_paginas=6):
+    """Igual ao _pedir, mas segue as PÁGINAS da resposta. A API divide o resultado em
+    páginas ('last_page' diz quantas); ler só a primeira esconde as mensagens do resto."""
+    todas, anterior = [], None
+    for pagina in range(1, max_paginas + 1):
+        params = {"api_key": api_key, "page_tam": 150, "pagina": pagina, **(extras or {})}
+        r = requests.get(f"{URL}/{caminho}", params=params, timeout=TIMEOUT)
+        r.raise_for_status()
+        js = r.json()
+        if js.get("status") is False:
+            raise RecusaAPI(str(js.get("message", "recusado pela API"))[:120])
+        dados = js.get("data") or {}
+        itens = dados.get("data") or []
+        primeiro = itens[0].get("mens") if itens else None
+        if pagina > 1 and primeiro == anterior:
+            break                              # a API ignorou o pedido de outra página: não repete
+        anterior = primeiro
+        todas += itens
+        if pagina >= (dados.get("last_page") or 1):
+            break
+    return todas
+
+
 def ultima_por_localidade(tipo, icaos, api_key):
     """Busca METAR ou TAF de várias localidades numa chamada só
     (a REDEMET aceita 'SBGR,SBBR,SBPA' separado por vírgula).
@@ -217,38 +240,50 @@ PADRAO_AVISO = r"((?:[A-Z]{4}/)*[A-Z]{4}) AD WRNG (\w+) VALID (\d{6})/(\d{6})"
 
 
 def avisos_aerodromo(icaos, api_key):
-    """AD WRNG vigentes agora. Retorna ({"SBGR": [texto, ...], ...}, erro).
-    Um aviso pode valer para vários aeródromos (ex.: 'SBST/SBTA AD WRNG 20 ...')."""
+    """AD WRNG vigentes agora. Retorna ({"SBGR": [texto, ...], ...}, erro, diagnostico).
+    Um aviso pode valer para vários aeródromos (ex.: 'SBST/SBTA AD WRNG 20 ...').
+    'diagnostico' lista TODA mensagem recebida e o que fizemos com ela (para conferência)."""
     try:
-        itens = _pedir(f"aviso/{','.join(icaos)}", api_key)
+        itens = _pedir_paginas(f"aviso/{','.join(icaos)}", api_key)
     except Exception as e:
-        return {}, f"Aviso de aeródromo indisponível às {_agora_z()} ({_motivo(e)})"
+        return {}, f"Aviso de aeródromo indisponível às {_agora_z()} ({_motivo(e)})", []
 
     agora = datetime.now(timezone.utc)
-    # { ... } com 'for' dentro cria um CONJUNTO (set): textos repetidos ficam só uma vez
-    textos = {" ".join((i.get("mens") or "").upper().split()) for i in itens}
+    # Junta pelo texto: o mesmo aviso pode vir uma vez para cada aeródromo consultado.
+    # setdefault(chave, valor_inicial) cria a entrada se ela ainda não existe.
+    por_texto = {}
+    for i in itens:
+        t = " ".join((i.get("mens") or "").upper().split())
+        if t:
+            por_texto.setdefault(t, set()).add((i.get("id_localidade") or "?").upper())
 
-    # Avisos cancelados: '... CNL AD WRNG 2 ...' cancela o aviso nº 2 daquele aeródromo
+    # Avisos cancelados: '... CNL AD WRNG 2 ...' cancela o aviso nº 2 daquele grupo
     cancelados = set()
-    for t in textos:
+    for t in por_texto:
         m = re.match(PADRAO_AVISO, t)
         for numero in re.findall(r"\bCNL AD WRNG (\w+)", t):
             if m:
                 cancelados.add((m.group(1), numero))
 
-    vigentes = {}
-    for t in textos:
+    vigentes, diagnostico = {}, []
+    for t, ids in por_texto.items():
         m = re.match(PADRAO_AVISO, t)
-        if not m or re.search(r"\bCNL\b", t):
-            continue                          # não é aviso, ou é a própria mensagem de cancelamento
-        grupo, numero, ini, fim = m.groups()
-        if (grupo, numero) in cancelados:
-            continue
-        if not (_instante_ddhhmm(ini, agora) <= agora <= _instante_ddhhmm(fim, agora)):
-            continue                          # fora da validade
-        for icao in grupo.split("/"):
-            vigentes.setdefault(icao, []).append(t)
-    return vigentes, None
+        if not m:
+            situacao = "ignorado (não é AD WRNG no formato esperado)"
+        elif re.search(r"\bCNL\b", t):
+            situacao = "ignorado (mensagem de cancelamento)"
+        else:
+            grupo, numero, ini, fim = m.groups()
+            if (grupo, numero) in cancelados:
+                situacao = "cancelado"
+            elif not (_instante_ddhhmm(ini, agora) <= agora <= _instante_ddhhmm(fim, agora)):
+                situacao = "fora da validade"
+            else:
+                situacao = "VIGENTE"
+                for icao in grupo.split("/"):
+                    vigentes.setdefault(icao, []).append(t)
+        diagnostico.append((situacao, sorted(ids), t))
+    return vigentes, None, diagnostico
 
 
 FENOMENOS_AVISO = [   # (código, descrição) — na ordem em que vão aparecer

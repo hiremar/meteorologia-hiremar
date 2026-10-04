@@ -84,8 +84,8 @@ def goes(canal):
 def metars_e_tafs(chave):
     metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
     tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_ICAO, chave)
-    avisos, e3 = rd.avisos_aerodromo(ad.LISTA_ICAO, chave)
-    return metars, tafs, avisos, [e for e in (e1, e2, e3) if e]
+    avisos, e3, diag = rd.avisos_aerodromo(ad.LISTA_ICAO, chave)
+    return metars, tafs, avisos, diag, [e for e in (e1, e2, e3) if e]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -253,7 +253,7 @@ if aba.startswith("🛰️"):
                 else:
                     chips.append(("Raios: nenhuma descarga informada", False))
 
-        metars, tafs, avisos_ad, erros = metars_e_tafs(api_key)
+        metars, tafs, avisos_ad, diag_ad, erros = metars_e_tafs(api_key)
         avisos += erros
         if ver_ads:
             cm.adicionar_aerodromos(m, metars, tafs, estilo, avisos_ad)
@@ -283,6 +283,16 @@ if aba.startswith("🛰️"):
     mostrar_mapa(m, altura=640)
     st.caption("Passe o mouse sobre um aeródromo para ver METAR e TAF. Use o botão de camadas "
                "(canto superior direito) para ligar e desligar camadas e trocar o mapa de fundo.")
+
+    # Diagnóstico (só aparece se o endereço terminar com ?diag=1): mostra tudo que a REDEMET
+    # devolveu nos avisos de aeródromo e o que o site fez com cada mensagem.
+    if st.query_params.get("diag"):
+        with st.expander(f"🔧 Diagnóstico · avisos de aeródromo ({len(diag_ad)} mensagem(ns) recebida(s))"):
+            if not diag_ad:
+                st.write("A REDEMET não devolveu nenhuma mensagem de aviso de aeródromo.")
+            for situacao, ids, texto in sorted(diag_ad, key=lambda x: x[0]):
+                st.markdown(f"<div class='msg'><b>{html.escape(situacao)}</b> · localidade(s) na resposta: "
+                            f"{html.escape(', '.join(ids))}<br>{html.escape(texto)}</div>", unsafe_allow_html=True)
 
     if nao_desenhados:
         with st.expander(f"SIGMET sem polígono desenhável ({len(nao_desenhados)})"):
