@@ -111,10 +111,11 @@ WACS = ["WAC_3140_BRASILIA", "WAC_3141_SALVADOR", "WAC_3189_BELO_HORIZONTE", "WA
         "WAC_3191_RONDONOPOLIS", "WAC_3192_CORUMBA", "WAC_3260_BELA_VISTA", "WAC_3261_CAMPO_GRANDE",
         "WAC_3262_SAO_PAULO", "WAC_3263_RIO_DE_JANEIRO", "WAC_3313_CURITIBA", "WAC_3314_FOZ_DO_IGUACU",
         "WAC_3383_URUGUAIANA", "WAC_3384_PORTO_ALEGRE", "WAC_3434_RIO_DA_PRATA"]
-CARTAS = {"": "Nenhuma"}
-CARTAS.update({f"ENRC_L{i}": f"ENRC baixa L{i}" for i in range(1, 10)})
-CARTAS.update({f"ENRC_H{i}": f"ENRC alta H{i}" for i in range(1, 10)})
-CARTAS.update({w: "WAC " + w[4:8] + " · " + w[9:].replace("_", " ").title() for w in WACS})
+
+
+def nome_wac(w):
+    """'WAC_3262_SAO_PAULO' -> 'WAC 3262 · Sao Paulo'  (texto mostrado no menu e no mapa)"""
+    return "WAC " + w[4:8] + " · " + w[9:].replace("_", " ").title()
 
 
 def fmt_z(dt):
@@ -168,11 +169,14 @@ if aba.startswith("🛰️"):
         horas = st.sidebar.select_slider("Validade", options=[0, 3, 6, 9, 12, 18, 24],
                                          format_func=lambda h: "agora" if h == 0 else f"+{h} h")
 
-    # Cartas do GeoAISWEB (DECEA). Uma de cada vez: escolher outra tira a anterior,
-    # assim uma carta nunca fica por cima da outra.
-    with st.sidebar.expander("🗺️ Cartas aeronáuticas (DECEA)"):
-        carta = st.selectbox("Carta", list(CARTAS), format_func=lambda k: CARTAS[k],
-                             help="Só uma carta por vez. Fonte: GeoAISWEB/DECEA.")
+    # Cartas do GeoAISWEB (DECEA), em duas partes separadas.
+    with st.sidebar.expander("🗺️ Cartas de rota ENRC (DECEA)"):
+        # Baixa e alta cobrem a MESMA área, então é uma OU outra (radio = escolha única).
+        enrc = st.radio("Mostrar", ["Nenhuma", "Todas de baixa (L1–L9)", "Todas de alta (H1–H9)"])
+    with st.sidebar.expander("🧭 Cartas visuais WAC (DECEA)"):
+        # WACs vizinhas não se sobrepõem: pode escolher várias (ex.: São Paulo + Rio).
+        wacs = st.multiselect("Cartas WAC", WACS, format_func=nome_wac,
+                              help="A WAC fica por cima da ENRC na área dela.")
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
     st.sidebar.subheader("📍 Planejamento de voo")
@@ -207,9 +211,15 @@ if aba.startswith("🛰️"):
     m.get_root().header.add_child(folium.Element(cm.CSS_MAPA))
     cm.adicionar_mapas_fundo(m)
 
-    if carta:                                   # "" = nenhuma carta escolhida
-        folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=f"ICA:{carta}",
-                            fmt="image/png", transparent=True, name=CARTAS[carta], overlay=True).add_to(m)
+    # Primeiro as ENRC, depois as WAC: no mapa, o que é adicionado por último fica por cima.
+    camadas = []
+    if enrc != "Nenhuma":
+        letra = "L" if "baixa" in enrc else "H"
+        camadas += [(f"ICA:ENRC_{letra}{i}", f"ENRC {letra}{i}") for i in range(1, 10)]
+    camadas += [(f"ICA:{w}", nome_wac(w)) for w in wacs]
+    for camada, nome in camadas:
+        folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=camada,
+                            fmt="image/png", transparent=True, name=nome, overlay=True).add_to(m)
 
     with st.spinner("Carregando satélite, mensagens e modelo..."):
         for canal, ligado, nome in (("IR", ver_ir, "GOES-19 IR (canal 13)"), ("VIS", ver_vis, "GOES-19 visível (canal 2)")):
