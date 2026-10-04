@@ -6,6 +6,7 @@ Se deu errado, 'erro' traz um texto curto que o site mostra na tela
 "não há SIGMET" com "não consegui consultar".
 """
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -247,15 +248,29 @@ def avisos_aerodromo(icaos, api_key):
     """AD WRNG vigentes agora. Retorna ({"SBGR": [texto, ...], ...}, erro, diagnostico).
     Um aviso pode valer para vários aeródromos (ex.: 'SBST/SBTA AD WRNG 20 ...').
     'diagnostico' lista TODA mensagem recebida e o que fizemos com ela (para conferência)."""
-    try:
-        # Sem datas, a API só olha a HORA ATUAL e perde avisos emitidos antes (ex.: o das 19:30Z
-        # consultado às 21Z). Pedimos as últimas 12 h; os vencidos o código descarta mais abaixo.
-        agora = datetime.now(timezone.utc)
-        janela = {"data_ini": (agora - timedelta(hours=12)).strftime("%Y%m%d%H"),
-                  "data_fim": agora.strftime("%Y%m%d%H")}
-        itens = _pedir_paginas(f"aviso/{','.join(icaos)}", api_key, janela)
-    except Exception as e:
-        return {}, f"Aviso de aeródromo indisponível às {_agora_z()} ({_motivo(e)})", []
+    # Sem datas, a API só olha a HORA ATUAL e perde avisos emitidos antes (ex.: o das 19:30Z
+    # consultado às 21Z). Pedimos as últimas 12 h; os vencidos o código descarta mais abaixo.
+    agora = datetime.now(timezone.utc)
+    janela = {"data_ini": (agora - timedelta(hours=12)).strftime("%Y%m%d%H"),
+              "data_fim": agora.strftime("%Y%m%d%H")}
+
+    # UM AERÓDROMO POR CONSULTA. Pedindo vários de uma vez, a API devolve só um aviso por
+    # órgão emissor e horário (ex.: SBGR emitiu os nº 9, 10, 11 e 20 às 19:30Z e só um voltava).
+    def consultar(icao):
+        try:
+            return _pedir_paginas(f"aviso/{icao}", api_key, janela), None
+        except Exception as e:
+            return [], _motivo(e)
+
+    # ThreadPoolExecutor faz até 8 consultas AO MESMO TEMPO (em vez de uma esperando a outra),
+    # então 30 aeródromos levam o tempo de poucas consultas.
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        resultados = list(executor.map(consultar, icaos))
+
+    itens = [item for lista, _ in resultados for item in lista]
+    falhas = [erro for _, erro in resultados if erro]
+    if falhas and len(falhas) == len(icaos):      # todas falharam: aí sim avisamos o erro
+        return {}, f"Aviso de aeródromo indisponível às {_agora_z()} ({falhas[0]})", []
 
     agora = datetime.now(timezone.utc)
     # Junta pelo texto: o mesmo aviso pode vir uma vez para cada aeródromo consultado.
