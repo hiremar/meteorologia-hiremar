@@ -236,7 +236,11 @@ def _instante_ddhhmm(s, agora):
     return min(candidatos, key=lambda c: abs(c - agora))
 
 
-PADRAO_AVISO = r"((?:[A-Z]{4}/)*[A-Z]{4}) AD WRNG (\w+) VALID (\d{6})/(\d{6})"
+# A mensagem pode começar com o órgão que EMITIU o aviso, antes do grupo de aeródromos:
+#   'SBGR SBRP/SBSP/SBSR/SBUL/SBUR AD WRNG 11 VALID ...'  (SBGR emitiu; vale para SBRP, SBSP...)
+# Por isso usamos re.search (procura em qualquer ponto) e \b (começo de palavra),
+# e o grupo capturado é só o que vem IMEDIATAMENTE antes de 'AD WRNG'.
+PADRAO_AVISO = r"\b((?:[A-Z]{4}/)*[A-Z]{4}) AD WRNG (\w+) VALID (\d{6})/(\d{6})"
 
 
 def avisos_aerodromo(icaos, api_key):
@@ -260,14 +264,14 @@ def avisos_aerodromo(icaos, api_key):
     # Avisos cancelados: '... CNL AD WRNG 2 ...' cancela o aviso nº 2 daquele grupo
     cancelados = set()
     for t in por_texto:
-        m = re.match(PADRAO_AVISO, t)
+        m = re.search(PADRAO_AVISO, t)
         for numero in re.findall(r"\bCNL AD WRNG (\w+)", t):
             if m:
                 cancelados.add((m.group(1), numero))
 
     vigentes, diagnostico = {}, []
     for t, ids in por_texto.items():
-        m = re.match(PADRAO_AVISO, t)
+        m = re.search(PADRAO_AVISO, t)
         if not m:
             situacao = "ignorado (não é AD WRNG no formato esperado)"
         elif re.search(r"\bCNL\b", t):
