@@ -32,7 +32,12 @@ from . import rota as rt
 # Níveis de cruzeiro: de FL030 a FL450, de 10 em 10. O vento sai do GFS interpolado.
 NIVEIS_CRUZEIRO = list(range(30, 460, 10))
 CORREDORES = [25, 50, 100]          # NM para cada lado da rota
-URL_SIGWX = "https://estatico-redemet.decea.mil.br/sigwx/{v:%Y/%m/%d}/{nome}{v:%H}.gif"
+URL_SIGWX = "https://estatico-redemet.decea.mil.br/sigwx/{t:%Y/%m/%d}/{nome}{t:%H}.gif"
+# O nome do arquivo NÃO é a validade. Observado em 08/10/2026: o arquivo
+# .../sigwx/2026/10/08/siginf06.gif é a carta "VALID 12 UTC 09-OCT-2026", ou seja,
+# pasta + hora do nome = validade - 30 h. Tentamos esse padrão primeiro e, por garantia,
+# o nome igual à validade. Se a REDEMET mudar o padrão, é só ajustar esta lista.
+DESLOCAMENTOS_SIGWX_H = [30, 0]
 # Cartas SIGWX da REDEMET por validade. 'siginf' = SFC/FL250 (CIMAER).
 # Quando soubermos o nome do arquivo da carta ALTA (FL250-630), é só acrescentar aqui,
 # ex.: ("sigsup", "FL250-FL630").
@@ -119,14 +124,19 @@ def sigwx_do_voo(voo, api_key):
     cartas = []
     for v in rt.validades_do_voo(etd, eta, 6):
         for nome, faixa in CARTAS_SIGWX:
-            url = URL_SIGWX.format(v=v, nome=nome)
             uso = f"usar de {v - timedelta(hours=3):%d/%m %H}Z a {v + timedelta(hours=3):%d/%m %H}Z"
-            try:
-                cartas.append({"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": url,
-                               "png": _imagem_png(url), "nota": f"Doc 8896: {uso}."})
-            except Exception:
-                cartas.append({"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": url,
-                               "png": None, "nota": f"carta desta validade não encontrada na REDEMET ({uso})."})
+            carta = {"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": None, "png": None,
+                     "nota": f"carta desta validade não encontrada na REDEMET ({uso})."}
+            for horas in DESLOCAMENTOS_SIGWX_H:
+                url = URL_SIGWX.format(t=v - timedelta(hours=horas), nome=nome)
+                try:
+                    carta.update(url=url, png=_imagem_png(url),
+                                 nota=f"Doc 8896: {uso}. Arquivo: {url.rsplit('/sigwx/', 1)[-1]}. "
+                                      "Confira a validade impressa na carta.")
+                    break
+                except Exception:
+                    continue
+            cartas.append(carta)
     if not any(c["png"] for c in cartas):          # nenhuma por validade: usa a mais recente da API
         url, erro = _sigwx_url(api_key)
         if url:
@@ -134,7 +144,8 @@ def sigwx_do_voo(voo, api_key):
                 cartas.append({"validade": None, "titulo": "SIGWX SFC/FL250 mais recente (API REDEMET)",
                                "url": url, "png": _imagem_png(url),
                                "nota": "Não achamos as cartas das validades do voo; esta é a mais recente "
-                                       "disponível. Confira a validade impressa na carta."})
+                                       "disponível e pode NÃO valer para o horário do voo. Confira a validade "
+                                       "impressa na carta."})
             except Exception:
                 pass
     return cartas
