@@ -4,7 +4,8 @@ Este arquivo só monta a TELA. O trabalho pesado está na pasta "modulos":
 cada assunto num arquivo (satélite, REDEMET, modelo GFS, desenho do mapa...).
 """
 import html
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import folium
@@ -189,6 +190,8 @@ if aba.startswith("🛰️"):
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
     # A aba do planejamento já vem ABERTA quando há um plano ativo (expanded=...).
+    if not isinstance(st.session_state.get("nivel", 100), int):   # sessão aberta na versão antiga do site
+        st.session_state["nivel"] = 100
     aba_plano = st.sidebar.expander("📍 Planejamento de voo", expanded=bool(st.session_state.get("plano")))
     with aba_plano.form("planejamento"):
         opcoes = ad.LISTA_ICAO
@@ -196,28 +199,43 @@ if aba.startswith("🛰️"):
         destino = st.selectbox("Destino", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
         altn = st.selectbox("Alternativa (opcional)", opcoes, index=None, placeholder="Escolha...",
                             format_func=ad.rotulo)
-        # Os níveis são os do modelo GFS (é onde temos vento e temperatura para o planejamento)
-        nivel_escolhido = st.selectbox("Nível de cruzeiro", pl.NIVEIS_CRUZEIRO,
-                                       index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", "FL100 · 700 hPa")),
-                                       help="Níveis com dados do modelo GFS. Escolha o mais próximo do seu.")
+        nivel_escolhido = st.selectbox("Nível de cruzeiro", pl.NIVEIS_CRUZEIRO, format_func=pl.fl_txt,
+                                       index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", 100)))
+        # Horário do voo (UTC). Padrão: decolagem daqui a ~30 min e 1 h de voo.
+        voo_atual = st.session_state.get("voo") or pl.voo_padrao()
+        c1, c2 = st.columns(2)
+        data_etd = c1.date_input("Decolagem (UTC)", voo_atual["etd"].date(), format="DD/MM/YYYY")
+        hora_etd = c2.time_input("Hora (UTC)", voo_atual["etd"].time(), step=300)
+        eet_txt = st.text_input("Tempo de voo (EET, hh:mm)", f"{voo_atual['eet_min'] // 60:02d}:"
+                                f"{voo_atual['eet_min'] % 60:02d}", help="Ex.: 01:15 = 1 h e 15 min.")
         planejar = st.form_submit_button("✈️ Planejar voo", type="primary")
     if planejar:
-        if origem and destino:
+        etd = datetime.combine(data_etd, hora_etd, tzinfo=timezone.utc)
+        m_eet = re.fullmatch(r"\s*(\d{1,2})[:h]?(\d{2})\s*", eet_txt or "")
+        agora_z = datetime.now(timezone.utc)
+        if not (origem and destino):
+            aba_plano.warning("Escolha pelo menos origem e destino.")
+        elif not m_eet or not (5 <= int(m_eet.group(1)) * 60 + int(m_eet.group(2)) <= 18 * 60):
+            aba_plano.warning("Tempo de voo inválido: use hh:mm (ex.: 01:15), entre 00:05 e 18:00.")
+        elif not (agora_z - timedelta(hours=1) <= etd <= agora_z + timedelta(hours=24)):
+            aba_plano.warning("A decolagem deve ser entre 1 h atrás e 24 h à frente (UTC).")
+        else:
             st.session_state["plano"] = [origem, destino, altn]
             st.session_state["nivel"] = nivel_escolhido
+            st.session_state["voo"] = {"etd": etd, "eet_min": int(m_eet.group(1)) * 60 + int(m_eet.group(2))}
             st.session_state.pop("pdf_voo", None)       # PDF de um plano anterior não vale mais
-        else:
-            aba_plano.warning("Escolha pelo menos origem e destino.")
     if st.session_state.get("plano") and aba_plano.button("Limpar planejamento"):
         del st.session_state["plano"]
         st.rerun()
     plano = st.session_state.get("plano")
-    nivel = st.session_state.get("nivel", "FL100 · 700 hPa")
+    nivel = st.session_state.get("nivel", 100)          # FL de cruzeiro (número: 100 = FL100)
+    voo = st.session_state.get("voo") or pl.voo_padrao()
 
     # ---------------- título ----------------
     if plano:
         st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else "")
-                 + f" · {nivel.split(' · ')[0]}")
+                 + f" · {pl.fl_txt(nivel)}")
+        st.caption(pl.txt_horarios(voo))
     else:
         st.title("🛰️ Briefing operacional")
     aviso_instrucao()
@@ -377,12 +395,12 @@ if aba.startswith("🛰️"):
     with abas[1]:
         pl.aba_consulta(api_key, plano)
     with abas[2]:
-        pl.aba_sigwx(api_key)
+        pl.aba_sigwx(api_key, plano, voo)
     with abas[3]:
-        pl.aba_vento(plano, nivel, modelo)
+        pl.aba_vento(plano, nivel, voo)
     with abas[4]:
-        pl.aba_gerar_voo(plano, nivel, api_key, {"goes": goes, "metars_e_tafs": metars_e_tafs,
-                                                 "sigmets": lista_sigmets, "raios": raios, "modelo": modelo})
+        pl.aba_gerar_voo(plano, nivel, voo, api_key, {"goes": goes, "metars_e_tafs": metars_e_tafs,
+                                                      "sigmets": lista_sigmets, "raios": raios})
 
 # ============================================================================
 # ABA 2 — AULAS E SIMULADORES

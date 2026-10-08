@@ -253,21 +253,22 @@ def legenda_padrao(com_raios=True, com_sigmet=True, com_altn=True):
 # ---------------------------------------------------------------------------
 # Mapa de vento: barbelas (o símbolo de vento das cartas aeronáuticas)
 # ---------------------------------------------------------------------------
-def mapa_vento(caixa, dados_gfs, rotulo_nivel, pernas, alternativa=None, titulo="", largura=1400):
-    """Fundo do mapa + barbelas de vento coloridas pela velocidade + a rota.
-    Usa o matplotlib só para desenhar as barbelas (ele já sabe desenhar o símbolo
-    certo: cada traço longo = 10 kt, traço curto = 5 kt, bandeira = 50 kt)."""
+def mapa_vento(caixa, dados_gfs, fl, pernas, alternativa=None, titulo="", largura=1400, numerados=()):
+    """Fundo do mapa + barbelas de vento no FL (coloridas pela velocidade) + a rota.
+    'numerados' = [(nº, lat, lon), ...]: bolinhas com o número do ponto da tabela de vento,
+    para o piloto se localizar. Usa o matplotlib só para desenhar as barbelas (ele já sabe
+    desenhar o símbolo certo: traço longo = 10 kt, traço curto = 5 kt, bandeira = 50 kt)."""
     import matplotlib
     matplotlib.use("Agg")                          # desenha sem janela (servidor)
     import matplotlib.pyplot as plt
     import numpy as np
+    from .rota import no_ponto
 
     folha = MapaEstatico(caixa, largura=largura)
     folha.fundo()
     folha.rotulos()
     folha.rota(pernas, alternativa)
 
-    d = dados_gfs["niveis"][rotulo_nivel]
     lats, lons = dados_gfs["lat"], dados_gfs["lon"]
     # uma barbela a cada ~75 pixels, em grade regular NA IMAGEM
     xs, ys, us, vs = [], [], [], []
@@ -277,12 +278,11 @@ def mapa_vento(caixa, dados_gfs, rotulo_nivel, pernas, alternativa=None, titulo=
             la, lo = folha.latlon(px, py)
             if not (lats[0] <= la <= lats[-1] and lons[0] <= lo <= lons[-1]):
                 continue
-            i = int(np.argmin(np.abs(lats - la)))
-            j = int(np.argmin(np.abs(lons - lo)))
+            u, v, _ = no_ponto(dados_gfs, fl, la, lo)      # já em nós, interpolado para o FL
             xs.append(px)
             ys.append(folha.h - py)               # no matplotlib o y cresce para CIMA
-            us.append(float(d["u"][i, j]) * 1.943844)
-            vs.append(float(d["v"][i, j]) * 1.943844)
+            us.append(u)
+            vs.append(v)
 
     dpi = 100
     fig = plt.figure(figsize=(folha.w / dpi, folha.h / dpi), dpi=dpi)
@@ -295,6 +295,12 @@ def mapa_vento(caixa, dados_gfs, rotulo_nivel, pernas, alternativa=None, titulo=
                                                         "#ff7a00", "#ff2a2a", "#ff3df2"])
     b = ax.barbs(xs, ys, us, vs, vel, cmap=cores, clim=(0, 120), length=7.5, linewidth=1.6,
                  sizes={"emptybarb": 0.15})
+    # bolinhas numeradas dos pontos da tabela (por cima das barbelas)
+    for n, la, lo in numerados:
+        x, y = folha.xy(la, lo)
+        ax.text(x, folha.h - y, str(n), color="#f1c40f", fontsize=10, fontweight="bold", ha="center",
+                va="center", zorder=5,
+                bbox=dict(boxstyle="circle,pad=0.25", facecolor="#0d1b28", edgecolor="#f1c40f", linewidth=1.5))
     ax.set_xlim(0, folha.w)
     ax.set_ylim(0, folha.h)
     ax.axis("off")

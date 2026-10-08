@@ -5,6 +5,7 @@ Tudo em graus decimais (sul e oeste negativos) e milhas náuticas (NM).
 A rota é a ortodrômica (o "caminho mais curto" sobre a Terra) entre dois pontos.
 """
 import math
+from datetime import timedelta
 
 import numpy as np
 
@@ -204,39 +205,122 @@ def isa_c(fl):
     return max(15 - 1.98 * fl / 10, -56.5)
 
 
-def vento_na_rota(dados_gfs, rotulo_nivel, pernas, passo_nm=None):
-    """Tabela do vento no nível escolhido, ao longo da rota.
+# ---------------------------------------------------------------------------
+# Horários do voo e validades (Doc 8896 da OACI, item 5.3.3.4)
+# ---------------------------------------------------------------------------
+# As cartas de vento/temperatura WAFS valem de 3 em 3 h e podem ser usadas de 1,5 h antes
+# até 1,5 h depois da validade. A SIGWX vale de 6 em 6 h, usada de 3 h antes a 3 h depois.
+# Na prática: para cada instante do voo, usa-se a validade MAIS PRÓXIMA na grade de 3 h
+# (vento) ou de 6 h (SIGWX). Voo longo -> mais de uma validade.
+def validade_mais_proxima(instante, passo_h):
+    """Arredonda para a validade mais próxima da grade (00Z, 03Z, 06Z... para passo 3)."""
+    base = instante.replace(hour=0, minute=0, second=0, microsecond=0)
+    horas = (instante - base).total_seconds() / 3600
+    return base + timedelta(hours=round(horas / passo_h) * passo_h)
 
+
+def validades_do_voo(etd, eta, passo_h):
+    """Todas as validades necessárias para cobrir o voo de etd a eta (olhando a cada 15 min).
+    Ex. do Doc 8896: voo 12-19Z -> vento 12, 15 e 18Z ; SIGWX 12 e 18Z."""
+    achadas, t = [], etd
+    while t <= eta:
+        v = validade_mais_proxima(t, passo_h)
+        if v not in achadas:
+            achadas.append(v)
+        t += timedelta(minutes=15)
+    v = validade_mais_proxima(eta, passo_h)
+    if v not in achadas:
+        achadas.append(v)
+    return achadas
+
+
+def hora_no_ponto(etd, eet_min, dist_nm, total_nm):
+    """Hora estimada sobre um ponto, supondo velocidade constante (regra de três)."""
+    frac = dist_nm / total_nm if total_nm else 0
+    return etd + timedelta(minutes=eet_min * frac)
+
+
+# ---------------------------------------------------------------------------
+# Qualquer FL: interpolação entre os níveis de pressão do modelo
+# ---------------------------------------------------------------------------
+def pressao_isa_hpa(fl):
+    """Pressão da atmosfera padrão no FL (FL = altitude-pressão em centenas de pés)."""
+    h = fl * 100 * 0.3048                                  # pés -> metros
+    if h <= 11000:
+        return 1013.25 * (1 - 2.25577e-5 * h) ** 5.25588
+    return 226.32 * math.exp(-(h - 11000) / 6341.6)        # acima da tropopausa ISA
+
+
+def niveis_iso(dados_gfs):
+    """[(hPa, rótulo), ...] dos níveis de pressão presentes nos dados, do mais baixo ao mais alto."""
+    from .modelo_gfs import NIVEIS
+    return sorted(((hpa, r) for r, (tipo, hpa) in NIVEIS.items()
+                   if tipo == "iso" and r in dados_gfs["niveis"]), reverse=True)
+
+
+def no_ponto(dados_gfs, fl, lat, lon):
+    """(u kt, v kt, T °C) no FL e no ponto. O FL vira pressão (ISA) e interpolamos entre os dois
+    níveis do modelo em volta, em ln(p) — a altura varia quase em linha reta com ln(p)."""
+    p = pressao_isa_hpa(fl)
+    niv = niveis_iso(dados_gfs)
+    lats, lons = dados_gfs["lat"], dados_gfs["lon"]
+    # acha os dois níveis vizinhos (fora da faixa do modelo, usa o mais próximo)
+    if p >= niv[0][0]:
+        pares, f = (niv[0], niv[0]), 0.0
+    elif p <= niv[-1][0]:
+        pares, f = (niv[-1], niv[-1]), 0.0
+    else:
+        k = next(i for i in range(len(niv) - 1) if niv[i][0] >= p >= niv[i + 1][0])
+        (p1, r1), (p2, r2) = niv[k], niv[k + 1]
+        pares, f = (niv[k], niv[k + 1]), (math.log(p1) - math.log(p)) / (math.log(p1) - math.log(p2))
+    vals = []
+    for _, r in pares:
+        d = dados_gfs["niveis"][r]
+        vals.append([_interpolar(d[c], lats, lons, lat, lon) for c in ("u", "v", "t")])
+    u, v, t = [(1 - f) * a + f * b for a, b in zip(*vals)]
+    return u * 1.943844, v * 1.943844, t - 273.15
+
+
+def vento_na_rota(dados_por_validade, fl, pernas, etd, eet_min, passo_nm=None):
+    """Tabela do vento no FL ao longo da rota, cada ponto com a validade do GFS da hora
+    em que o avião passa por ali (regra de 1,5 h do Doc 8896).
+
+    dados_por_validade = {datetime da validade: dados do GFS}
     Componente na rota = projeção do vento sobre o rumo:  u·sen(rumo) + v·cos(rumo).
     Positivo = vento de cauda (ajuda); negativo = vento de proa (atrapalha).
     Devolve (linhas, resumo)."""
-    d = dados_gfs["niveis"][rotulo_nivel]
-    lats, lons = dados_gfs["lat"], dados_gfs["lon"]
     total = sum(distancia_nm(a, b) for a, b in zip(pernas, pernas[1:]))
     passo = passo_nm or max(25, min(100, round(total / 8 / 25) * 25))   # ~8 a 12 linhas
-    fl = nivel_fl(rotulo_nivel)
     linhas = []
-    for lat, lon, acum, rumo in pontos_da_rota(pernas, passo):
-        u = _interpolar(d["u"], lats, lons, lat, lon) * 1.943844      # m/s -> kt
-        v = _interpolar(d["v"], lats, lons, lat, lon) * 1.943844
-        t = _interpolar(d["t"], lats, lons, lat, lon) - 273.15 if d.get("t") is not None else None
+    for n, (lat, lon, acum, rumo) in enumerate(pontos_da_rota(pernas, passo), start=1):
+        hora = hora_no_ponto(etd, eet_min, acum, total)
+        validade = validade_mais_proxima(hora, 3)
+        dados = dados_por_validade.get(validade)
+        if dados is None:                     # validade que não baixou: usa a mais próxima que houver
+            validade = min(dados_por_validade, key=lambda v: abs(v - hora))
+            dados = dados_por_validade[validade]
+        u, v, t = no_ponto(dados, fl, lat, lon)
         rad = math.radians(rumo)
         comp = u * math.sin(rad) + v * math.cos(rad)
         direcao, vel = vento_de(u, v)
-        linhas.append({"lat": lat, "lon": lon, "dist_nm": round(acum), "rumo": round(rumo),
+        linhas.append({"n": n, "lat": lat, "lon": lon, "dist_nm": round(acum), "rumo": round(rumo),
+                       "hora": hora, "validade": validade,
                        "vento": f"{direcao:03d}/{vel:02d} kt", "dir": direcao, "vel": vel,
-                       "temp_c": None if t is None else round(t),
-                       "isa_desvio": None if t is None else round(t - isa_c(fl)),
-                       "componente": round(comp)})
+                       "temp_c": round(t), "isa_desvio": round(t - isa_c(fl)), "componente": round(comp)})
     comps = [l["componente"] for l in linhas]
-    temps = [l["temp_c"] for l in linhas if l["temp_c"] is not None]
+    temps = [l["temp_c"] for l in linhas]
     resumo = {"componente_media": round(sum(comps) / len(comps)) if comps else 0,
               "vento_max": max((l["vel"] for l in linhas), default=0),
               "temp_min": min(temps) if temps else None, "temp_max": max(temps) if temps else None,
-              "isa_desvio_medio": round(sum(l["isa_desvio"] for l in linhas if l["isa_desvio"] is not None)
-                                        / len(temps)) if temps else None,
-              "distancia_nm": round(total), "fl": fl}
+              "isa_desvio_medio": round(sum(l["isa_desvio"] for l in linhas) / len(linhas)) if linhas else None,
+              "distancia_nm": round(total), "fl": fl,
+              "validades": sorted({l["validade"] for l in linhas})}
     return linhas, resumo
+
+
+def niveis_vizinhos(fl, minimo=30, maximo=450):
+    """Nível de cruzeiro e os vizinhos no MESMO sentido de voo (±2.000 ft): FL340 -> 320, 340, 360."""
+    return [n for n in (fl - 20, fl, fl + 20) if minimo <= n <= maximo]
 
 
 def texto_componente(c):

@@ -1,15 +1,19 @@
 """Planejamento de voo: as abas que ficam embaixo do mapa.
 
   🕓 Consultar mensagens  -> METAR/SPECI/TAF passados, por período (igual à REDEMET)
-  🗺️ SIGWX               -> carta de tempo significativo da REDEMET
-  🌬️ Vento na rota       -> vento e temperatura do GFS no nível de cruzeiro
+  🗺️ SIGWX               -> cartas SIGWX que cobrem o horário do voo
+  🌬️ Vento na rota       -> vento e temperatura do GFS no FL de cruzeiro e nos vizinhos
   📄 Gerar voo           -> junta o que o piloto escolher num PDF colorido
 
 A aba "Dados da rota" (METAR/TAF de origem, destino e alternativa) continua no app.py.
 
-As funções que BAIXAM dados com cache (satélite, METAR, raios, GFS) ficam no app.py;
-ele as entrega aqui no dicionário 'fontes', para o cache ser o mesmo do mapa
-(o que o mapa já baixou, o PDF reaproveita sem baixar de novo).
+HORÁRIOS (Doc 8896 da OACI, item 5.3.3.4): o piloto informa a decolagem (ETD) e o tempo
+de voo (EET). Cada ponto da rota ganha uma hora estimada, e para cada hora usamos:
+  - vento/temperatura: a validade mais próxima na grade de 3 h (vale ±1,5 h);
+  - SIGWX: a validade mais próxima na grade de 6 h (vale ±3 h).
+
+As funções do app.py que BAIXAM dados com cache (satélite, METAR, raios) chegam aqui no
+dicionário 'fontes', para o PDF reaproveitar o que o mapa já baixou.
 """
 import csv
 import io
@@ -25,9 +29,36 @@ from . import modelo_gfs as gfs
 from . import redemet as rd
 from . import rota as rt
 
-# Níveis de cruzeiro oferecidos = os níveis de pressão do GFS (só eles têm vento E temperatura)
-NIVEIS_CRUZEIRO = [r for r, (tipo, _) in gfs.NIVEIS.items() if tipo == "iso"]
+# Níveis de cruzeiro: de FL030 a FL450, de 10 em 10. O vento sai do GFS interpolado.
+NIVEIS_CRUZEIRO = list(range(30, 460, 10))
 CORREDORES = [25, 50, 100]          # NM para cada lado da rota
+URL_SIGWX = "https://estatico-redemet.decea.mil.br/sigwx/{v:%Y/%m/%d}/{nome}{v:%H}.gif"
+# Cartas SIGWX da REDEMET por validade. 'siginf' = SFC/FL250 (CIMAER).
+# Quando soubermos o nome do arquivo da carta ALTA (FL250-630), é só acrescentar aqui,
+# ex.: ("sigsup", "FL250-FL630").
+CARTAS_SIGWX = [("siginf", "SFC/FL250 (CIMAER)")]
+
+
+def fl_txt(fl):
+    return f"FL{fl:03d}"
+
+
+def voo_padrao():
+    """Decolagem nos próximos ~30 min (arredondada a 5 min) e 1 h de voo."""
+    agora = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    etd = agora + timedelta(minutes=30 - agora.minute % 5)
+    return {"etd": etd, "eet_min": 60}
+
+
+def horarios(voo):
+    """(etd, eta, eet_min) a partir do que está guardado na sessão."""
+    voo = voo or voo_padrao()
+    return voo["etd"], voo["etd"] + timedelta(minutes=voo["eet_min"]), voo["eet_min"]
+
+
+def txt_horarios(voo):
+    etd, eta, eet = horarios(voo)
+    return f"ETD {etd:%d/%m %H:%M}Z · EET {eet // 60:02d}:{eet % 60:02d} · ETA {eta:%d/%m %H:%M}Z"
 
 
 # ============================================================================
@@ -49,14 +80,64 @@ def _sigwx_url(chave):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _sigwx_png(url):
-    """Baixa a imagem da SIGWX e devolve como PNG (a REDEMET às vezes manda GIF)."""
+def _imagem_png(url):
+    """Baixa uma imagem e devolve como PNG (a REDEMET manda GIF). Levanta exceção se não existir."""
     from PIL import Image
     r = requests.get(url, timeout=20)
     r.raise_for_status()
     buf = io.BytesIO()
     Image.open(io.BytesIO(r.content)).convert("RGB").save(buf, format="PNG")
     return buf.getvalue()
+
+
+@st.cache_data(ttl=3 * 3600, show_spinner=False, max_entries=6)
+def _gfs_validade(validade):
+    """GFS válido no instante 'validade' (hora cheia). Fica 3 h no cache."""
+    conteudo, info = gfs.baixar(alvo=validade)
+    return gfs.ler_grib(conteudo), info
+
+
+def gfs_do_voo(voo):
+    """Baixa o GFS de todas as validades que o voo precisa. Devolve ({validade: dados}, infos, erros)."""
+    etd, eta, _ = horarios(voo)
+    dados, infos, erros = {}, [], []
+    for v in rt.validades_do_voo(etd, eta, 3):
+        try:
+            d, info = _gfs_validade(v)
+            dados[v] = d
+            infos.append(info)
+        except Exception as e:
+            erros.append(f"GFS válido {v:%d/%m %H}Z indisponível ({e})")
+    return dados, infos, erros
+
+
+def sigwx_do_voo(voo, api_key):
+    """Cartas SIGWX que cobrem o voo (validade ±3 h). Devolve lista de dicts
+    {validade, titulo, url, png (ou None), nota}. Se a carta da validade não existir na
+    REDEMET, cai para a mais recente da API e avisa."""
+    etd, eta, _ = horarios(voo)
+    cartas = []
+    for v in rt.validades_do_voo(etd, eta, 6):
+        for nome, faixa in CARTAS_SIGWX:
+            url = URL_SIGWX.format(v=v, nome=nome)
+            uso = f"usar de {v - timedelta(hours=3):%d/%m %H}Z a {v + timedelta(hours=3):%d/%m %H}Z"
+            try:
+                cartas.append({"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": url,
+                               "png": _imagem_png(url), "nota": f"Doc 8896: {uso}."})
+            except Exception:
+                cartas.append({"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": url,
+                               "png": None, "nota": f"carta desta validade não encontrada na REDEMET ({uso})."})
+    if not any(c["png"] for c in cartas):          # nenhuma por validade: usa a mais recente da API
+        url, erro = _sigwx_url(api_key)
+        if url:
+            try:
+                cartas.append({"validade": None, "titulo": "SIGWX SFC/FL250 mais recente (API REDEMET)",
+                               "url": url, "png": _imagem_png(url),
+                               "nota": "Não achamos as cartas das validades do voo; esta é a mais recente "
+                                       "disponível. Confira a validade impressa na carta."})
+            except Exception:
+                pass
+    return cartas
 
 
 # ============================================================================
@@ -169,91 +250,123 @@ def aba_consulta(api_key, plano=None):
 # ============================================================================
 # 2) SIGWX
 # ============================================================================
-def aba_sigwx(api_key):
+def aba_sigwx(api_key, plano=None, voo=None):
+    if plano:
+        st.markdown(f"Cartas **SIGWX** para o voo ({txt_horarios(voo)}). Pelo **Doc 8896 (OACI), "
+                    "item 5.3.3.4**, cada SIGWX pode ser usada de **3 h antes até 3 h depois** da validade; "
+                    "voos longos precisam de mais de uma carta.")
+        with st.spinner("Buscando as cartas na REDEMET..."):
+            cartas = sigwx_do_voo(voo, api_key)
+        for c in cartas:
+            st.markdown(f"**{c['titulo']}** · {c['nota']}")
+            if c["png"]:
+                st.image(c["png"], use_container_width=True)
+                st.caption(f"[Abrir a imagem original]({c['url']})")
+        if not any(c["png"] for c in cartas):
+            st.warning("A REDEMET não entregou nenhuma carta SIGWX agora (pode estar em manutenção).", icon="⚠️")
+        st.caption("A carta de nível alto (FL250-FL630) ainda não está disponível por aqui.")
+        return
     url, erro = _sigwx_url(api_key)
     if erro:
         st.warning(erro, icon="⚠️")
         return
     m = re.search(r"/(\d{4})/(\d{2})/(\d{2})/[a-z]*?(\d{2})\.\w+$", url)
     quando = f" · {m.group(3)}/{m.group(2)}/{m.group(1)} {m.group(4)}Z" if m else ""
-    st.markdown(f"Carta de **tempo significativo (SIGWX) SFC/FL250** mais recente da REDEMET{quando}. "
-                f"[Abrir a imagem em tamanho real]({url})")
+    st.markdown(f"Carta **SIGWX SFC/FL250** mais recente da REDEMET{quando}. "
+                f"[Abrir a imagem em tamanho real]({url})  \nPlaneje um voo para ver as cartas "
+                "das validades do seu horário (Doc 8896: ±3 h).")
     st.image(url, use_container_width=True)
-    st.caption("A API da REDEMET entrega só a carta mais recente (não permite consultar cartas antigas).")
 
 
 # ============================================================================
 # 3) Vento na rota
 # ============================================================================
-def _carregar_gfs(modelo, horas):
-    hora_cheia = datetime.now(timezone.utc).strftime("%Y%m%d%H")
-    return modelo(horas, hora_cheia)
-
-
 def _pernas(plano):
     return [ad.COORDS[plano[0]], ad.COORDS[plano[1]]]
 
 
+def _posicao(l):
+    return f"{abs(l['lat']):.1f}{'S' if l['lat'] < 0 else 'N'} {abs(l['lon']):.1f}{'W' if l['lon'] < 0 else 'E'}"
+
+
+def calcular_ventos(dados_val, fl, plano, voo):
+    """Vento no FL escolhido e nos vizinhos (±2.000 ft). Devolve {fl: (linhas, resumo)}."""
+    etd, _, eet = horarios(voo)
+    return {n: rt.vento_na_rota(dados_val, n, _pernas(plano), etd, eet) for n in rt.niveis_vizinhos(fl)}
+
+
+def tabela_comparacao(ventos, fl):
+    return [{"Nível": fl_txt(n) + (" (escolhido)" if n == fl else ""),
+             "Componente média": rt.texto_componente(r["componente_media"]),
+             "Vento máximo": f"{r['vento_max']} kt",
+             "Temperatura": f"{r['temp_min']} a {r['temp_max']} °C",
+             "Desvio ISA": f"ISA{r['isa_desvio_medio']:+d}"} for n, (_, r) in ventos.items()]
+
+
 def _tabela_vento(linhas):
-    return [{"Distância": f"{l['dist_nm']} NM",
-             "Posição": f"{abs(l['lat']):.1f}{'S' if l['lat'] < 0 else 'N'} {abs(l['lon']):.1f}{'W' if l['lon'] < 0 else 'E'}",
-             "Rumo V": f"{l['rumo']:03d}°", "Vento": l["vento"],
-             "Temperatura": "-" if l["temp_c"] is None else f"{l['temp_c']} °C",
-             "Componente": rt.texto_componente(l["componente"]),
-             "Desvio ISA": "-" if l["isa_desvio"] is None else f"ISA{l['isa_desvio']:+d}"} for l in linhas]
+    return [{"Nº": l["n"], "Distância": f"{l['dist_nm']} NM", "Hora": f"{l['hora']:%H:%M}Z",
+             "Posição": _posicao(l), "Vento": l["vento"], "Temperatura": f"{l['temp_c']} °C",
+             "Desvio ISA": f"ISA{l['isa_desvio']:+d}", "Componente": rt.texto_componente(l["componente"]),
+             "GFS válido": f"{l['validade']:%d/%m %H}Z"} for l in linhas]
 
 
 def resumo_vento_txt(res):
-    t = (f"Componente média na rota: {rt.texto_componente(res['componente_media'])}. "
-         f"Vento máximo no nível: {res['vento_max']} kt.")
-    if res["temp_min"] is not None:
-        t += (f" Temperatura de {res['temp_min']} a {res['temp_max']} °C "
-              f"(ISA{res['isa_desvio_medio']:+d} em média).")
-    return t
+    return (f"Componente média na rota: {rt.texto_componente(res['componente_media'])}. "
+            f"Vento máximo no nível: {res['vento_max']} kt. Temperatura de {res['temp_min']} a "
+            f"{res['temp_max']} °C (ISA{res['isa_desvio_medio']:+d} em média).")
 
 
-def aba_vento(plano, nivel, modelo):
+def _mapa_vento(dados_val, fl, plano, linhas):
+    """Mapa de barbelas no FL, com a validade do MEIO do voo, e os pontos numerados da tabela."""
+    from . import mapa_estatico as me
+    validades = sorted({l["validade"] for l in linhas})
+    meio = validades[len(validades) // 2]
+    pontos = [ad.COORDS[i] for i in plano if i]
+    return me.mapa_vento(rt.limites(pontos, margem_graus=1.2, minimo_graus=5), dados_val[meio], fl,
+                         _pernas(plano), ad.COORDS[plano[2]] if plano[2] else None,
+                         f"Vento {fl_txt(fl)} · GFS válido {meio:%d/%m %H}Z",
+                         numerados=[(l["n"], l["lat"], l["lon"]) for l in linhas])
+
+
+def aba_vento(plano, fl, voo):
     if not plano:
-        st.info("Planeje um voo na barra lateral (origem, destino e nível) para ver o vento na rota.", icon="🧭")
+        st.info("Planeje um voo na barra lateral (origem, destino, nível e horário) para ver o vento na rota.",
+                icon="🧭")
         return
-    c1, c2 = st.columns([2, 3])
-    horas = c1.select_slider("Validade do modelo", options=[0, 3, 6, 9, 12, 18, 24], key="vento_horas",
-                             format_func=lambda h: "agora" if h == 0 else f"+{h} h")
-    # O GFS pesa alguns MB: só baixa quando o usuário pedir (depois fica no cache por 1 h)
+    # O GFS pesa alguns MB por validade: só baixa quando o usuário pedir (depois fica no cache)
     if not st.session_state.get("vento_ligado"):
-        if c2.button("🌬️ Calcular vento na rota", type="primary"):
+        st.caption(f"Vento e temperatura do modelo GFS no {fl_txt(fl)} e nos níveis vizinhos (±2.000 ft), "
+                   f"ponto a ponto, na hora em que você passa por cada ponto ({txt_horarios(voo)}).")
+        if st.button("🌬️ Calcular vento na rota", type="primary"):
             st.session_state["vento_ligado"] = True
             st.rerun()
-        st.caption(f"Vento e temperatura do modelo GFS no {nivel.split(' · ')[0]}, ponto a ponto ao longo da rota.")
         return
-    try:
-        with st.spinner("Baixando o modelo GFS (a primeira vez demora um pouco)..."):
-            dados, info = _carregar_gfs(modelo, horas)
-    except Exception as e:
-        st.warning(f"Modelo GFS indisponível agora ({e}).", icon="⚠️")
+    with st.spinner("Baixando o modelo GFS das validades do voo (a primeira vez demora um pouco)..."):
+        dados_val, infos, erros = gfs_do_voo(voo)
+    for e in erros:
+        st.warning(e, icon="⚠️")
+    if not dados_val:
         return
-    linhas, res = rt.vento_na_rota(dados, nivel, _pernas(plano))
-    st.markdown(f"**{nivel.split(' · ')[0]}** · GFS {info['run']:%d/%H}Z +{info['fhora']}h, "
-                f"válido {info['valido']:%d/%m %H:%M}Z · {res['distancia_nm']} NM")
+    ventos = calcular_ventos(dados_val, fl, plano, voo)
+    linhas, res = ventos[fl]
+    validades = ", ".join(f"{v:%d/%m %H}Z" for v in res["validades"])
+    st.markdown(f"**{txt_horarios(voo)}** · {res['distancia_nm']} NM · GFS válido {validades} "
+                f"(Doc 8896: cada validade vale ±1,5 h)")
+    st.markdown("**Comparação de níveis** (vizinhos no mesmo sentido de voo, ±2.000 ft)")
+    st.dataframe(tabela_comparacao(ventos, fl), hide_index=True, use_container_width=True)
+    escolha = st.radio("Detalhar o nível", list(ventos), index=list(ventos).index(fl), horizontal=True,
+                       format_func=fl_txt)
+    linhas, res = ventos[escolha]
     c = res["componente_media"]
     cor = "#d7263d" if c <= -15 else "#2e9e44" if c >= 15 else "#c9d3dc"
-    st.markdown(f"<div style='font-size:1.05rem'>Componente média: "
+    st.markdown(f"<div style='font-size:1.05rem'>{fl_txt(escolha)} · componente média: "
                 f"<b style='color:{cor}'>{rt.texto_componente(c)}</b></div>", unsafe_allow_html=True)
-    st.caption(resumo_vento_txt(res))
     st.dataframe(_tabela_vento(linhas), hide_index=True, use_container_width=True)
     try:
-        png = _mapa_vento(dados, nivel, plano, info)
-        st.image(png, use_container_width=True)
+        st.image(_mapa_vento(dados_val, escolha, plano, linhas), use_container_width=True,
+                 caption="Os números no mapa são os pontos da tabela.")
     except Exception as e:
         st.caption(f"Mapa de barbelas indisponível ({type(e).__name__}).")
-
-
-def _mapa_vento(dados, nivel, plano, info):
-    from . import mapa_estatico as me
-    pontos = [ad.COORDS[i] for i in plano if i]
-    return me.mapa_vento(rt.limites(pontos, margem_graus=2.5, minimo_graus=8), dados, nivel, _pernas(plano),
-                         ad.COORDS[plano[2]] if plano[2] else None,
-                         f"Vento {nivel.split(' · ')[0]} · GFS válido {info['valido']:%d/%m %H}Z")
 
 
 # ============================================================================
@@ -268,20 +381,22 @@ def _cartao(papel, icao, metars, tafs, avisos_ad, agora):
             "avisos": [(rd.decodificar_aviso(a), a) for a in avisos_ad.get(icao, [])]}
 
 
-def montar_briefing(plano, nivel, opcoes, corredor_nm, metars, tafs, avisos_ad, sigmets_txt,
-                    pontos_raios, satelite=None, gfs_dados=None, sigwx=None, agora=None):
+def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad, sigmets_txt,
+                    pontos_raios, satelite=None, gfs_val=None, sigwx=None, agora=None):
     """Junta tudo num dicionário para o relatorio_pdf.gerar(). Não usa nada do Streamlit
     (assim dá para testar fora do site).
     opcoes  : conjunto com "mapa", "aerodromos", "em_rota", "sigmet", "raios", "vento", "sigwx"
-    satelite: (data_url, limites, instante) ou None ; gfs_dados: (dados, info) ou None
-    sigwx   : (png_bytes, texto) ou None"""
+    satelite: (data_url, limites, instante) ou None
+    gfs_val : {validade: dados do GFS} ou None
+    sigwx   : lista de cartas de sigwx_do_voo() ou None"""
     from . import mapa_estatico as me
     agora = agora or datetime.now(timezone.utc)
     origem, destino, altn = plano
+    etd, eta, eet = horarios(voo)
     pernas = _pernas(plano)
     amostras = rt.pontos_da_rota(pernas, 10)
-    fl = rt.nivel_fl(nivel)
-    b = {"origem": origem, "destino": destino, "altn": altn, "nivel": nivel.replace(" · ", " / "),
+    b = {"origem": origem, "destino": destino, "altn": altn, "nivel": fl_txt(fl),
+         "horarios": txt_horarios(voo),
          "distancia_nm": round(rt.distancia_nm(*pernas)), "rumo": round(rt.rumo_verdadeiro(*pernas)),
          "corredor_nm": corredor_nm, "gerado_em": agora, "indisponiveis": []}
 
@@ -294,22 +409,20 @@ def montar_briefing(plano, nivel, opcoes, corredor_nm, metars, tafs, avisos_ad, 
         b["aerodromos"] = [_cartao(p, i, metars, tafs, avisos_ad, agora)
                            for p, i in zip(("Origem", "Destino", "Alternativa"), plano) if i]
     if "em_rota" in opcoes:
-        b["em_rota"] = []
-        for icao, d in em_rota:
-            c = _cartao(f"Em rota ({d} NM da rota)", icao, metars, tafs, avisos_ad, agora)
-            b["em_rota"].append(c)
+        b["em_rota"] = [_cartao(f"Em rota ({d} NM da rota)", icao, metars, tafs, avisos_ad, agora)
+                        for icao, d in em_rota]
     if "sigmet" in opcoes:
         b["sigmets"] = [(rd.decodificar_sigmet(t), t, no_nivel) for t, no_nivel in na_rota]
     if "raios" in opcoes:
         if n_raios:
-            idade = rd.FAIXAS_RAIOS[faixa][2]
             b["raios_txt"] = (f"{n_raios} descarga(s) na última hora a até {corredor_nm} NM da rota "
-                              f"(as mais recentes: {idade}).")
+                              f"(as mais recentes: {rd.FAIXAS_RAIOS[faixa][2]}).")
         elif raio_perto is not None:
             b["raios_txt"] = (f"Nenhuma descarga no corredor de {corredor_nm} NM. "
                               f"A mais próxima está a cerca de {raio_perto} NM da rota.")
         else:
             b["raios_txt"] = "Nenhuma descarga atmosférica informada perto da rota na última hora."
+        b["raios_txt"] += " (Raios são observação dos últimos 60 min, não previsão para a hora do voo.)"
 
     # ---------- resumo da primeira página ----------
     cats = [_cartao("", i, metars, tafs, avisos_ad, agora)["cat"] for i in plano if i]
@@ -318,7 +431,8 @@ def montar_briefing(plano, nivel, opcoes, corredor_nm, metars, tafs, avisos_ad, 
     com_aviso = [i for i in [*plano, *(i for i, _ in em_rota)] if i and avisos_ad.get(i)]
     no_nivel = [t for t, n in na_rota if n]
     b["resumo"] = [
-        ("Categorias (FAA)", " · ".join(f"{i} {c}" for i, c in zip([i for i in plano if i], cats)) +
+        ("Horários", txt_horarios(voo)),
+        ("Categorias agora (FAA)", " · ".join(f"{i} {c}" for i, c in zip([i for i in plano if i], cats)) +
          f"  (pior: {pior})"),
         ("SIGMET perto da rota", f"{len(na_rota)}" + (f", {len(no_nivel)} no seu nível" if na_rota else "")),
         ("Raios no corredor", f"{n_raios} na última hora" if n_raios else "nenhum"),
@@ -328,21 +442,26 @@ def montar_briefing(plano, nivel, opcoes, corredor_nm, metars, tafs, avisos_ad, 
 
     # ---------- vento ----------
     if "vento" in opcoes:
-        if gfs_dados:
-            dados, info = gfs_dados
-            linhas, res = rt.vento_na_rota(dados, nivel, pernas)
-            for l in linhas:
-                l["comp_txt"] = rt.texto_componente(l["componente"])
-            fonte = (f"GFS rodada {info['run']:%d/%m %H}Z +{info['fhora']}h, válido {info['valido']:%d/%m %H:%M}Z. "
-                     f"Componente: positivo = cauda (verde), negativo = proa (vermelho).")
+        if gfs_val:
+            ventos = calcular_ventos(gfs_val, fl, plano, voo)
+            linhas, res = ventos[fl]
+            validades = ", ".join(f"{v:%d/%m %H}Z" for v in res["validades"])
             try:
-                png_v = _mapa_vento(dados, nivel, plano, info)
+                png_v = _mapa_vento(gfs_val, fl, plano, linhas)
             except Exception:
                 png_v = None
-            b["vento"] = {"nivel": nivel.split(" · ")[0], "linhas": linhas, "fonte": fonte,
-                          "resumo_txt": resumo_vento_txt(res), "mapa_png": png_v}
-            b["resumo"].insert(0, ("Vento no nível", f"{rt.texto_componente(res['componente_media'])} em média, "
-                                                     f"máx. {res['vento_max']} kt"))
+            b["vento"] = {
+                "nivel": fl_txt(fl), "niveis": [fl_txt(n) for n in ventos], "fl": fl,
+                "comparacao": tabela_comparacao(ventos, fl),
+                "linhas": [{**l, "por_nivel": {fl_txt(n): ventos[n][0][i] for n in ventos}}
+                           for i, l in enumerate(linhas)],
+                "fonte": (f"Modelo GFS válido {validades}. Doc 8896 (OACI) 5.3.3.4: cada validade de vento/"
+                          "temperatura vale de 1,5 h antes a 1,5 h depois; cada ponto usa a validade da hora "
+                          "estimada de passagem. Níveis vizinhos = mesmo sentido de voo (±2.000 ft)."),
+                "resumo_txt": resumo_vento_txt(res), "mapa_png": png_v}
+            b["resumo"].insert(1, (f"Vento no {fl_txt(fl)}",
+                                   f"{rt.texto_componente(res['componente_media'])} em média, "
+                                   f"máx. {res['vento_max']} kt"))
         else:
             b["indisponiveis"].append("modelo GFS indisponível: o PDF saiu sem a parte de vento.")
 
@@ -361,22 +480,25 @@ def montar_briefing(plano, nivel, opcoes, corredor_nm, metars, tafs, avisos_ad, 
         folha.raios(pontos_raios)
         folha.rota(pernas, ad.COORDS[altn] if altn else None)
         folha.aerodromos(metars, [i for i in plano if i] + [i for i, _ in em_rota], avisos_ad)
-        folha.titulo(f"{origem} -> {destino}" + (f" (altn {altn})" if altn else "") + f" · {nivel.split(' · ')[0]}")
+        folha.titulo(f"{origem} -> {destino}" + (f" (altn {altn})" if altn else "") + f" · {fl_txt(fl)}")
         folha.legenda(me.legenda_padrao(bool(pontos_raios), bool(sigmets_txt), bool(altn)))
         b["mapa_png"] = folha.png()
         partes = []
         if satelite:
-            partes.append(f"Satélite GOES-19 IR de {satelite[2]:%d/%m %H:%M}Z")
+            partes.append(f"Situação ATUAL: satélite GOES-19 IR de {satelite[2]:%d/%m %H:%M}Z")
         partes.append(f"Etiquetas: categoria de voo FAA pelo METAR. Corredor da rota: {corredor_nm} NM.")
         if folha.avisos:
             partes.append("Mapa de fundo indisponível no momento.")
         b["mapa_legenda"] = ". ".join(partes)
 
     if "sigwx" in opcoes:
-        if sigwx:
-            b["sigwx_png"], b["sigwx_txt"] = sigwx
-        else:
-            b["indisponiveis"].append("carta SIGWX indisponível: o PDF saiu sem ela.")
+        b["sigwx"] = [c for c in (sigwx or []) if c["png"]]
+        faltando = [c for c in (sigwx or []) if not c["png"] and c["validade"]]
+        if not b["sigwx"]:
+            b["indisponiveis"].append("carta SIGWX indisponível na REDEMET: o PDF saiu sem ela.")
+        elif faltando:
+            b["indisponiveis"].append("SIGWX não encontrada para: " +
+                                      ", ".join(f"{c['validade']:%d/%m %H}Z" for c in faltando) + ".")
     return b
 
 
@@ -386,33 +508,28 @@ ITENS_PDF = {   # chave: (texto da caixa de seleção, marcada por padrão?)
     "em_rota": ("🛬 METAR / TAF dos aeródromos no meio da rota", True),
     "sigmet": ("⚡ SIGMET que afetam a rota (decodificados)", True),
     "raios": ("🌩️ Raios perto da rota", True),
-    "vento": ("🌬️ Vento e temperatura no nível de cruzeiro (GFS)", True),
-    "sigwx": ("🗺️ Carta SIGWX", True),
+    "vento": ("🌬️ Vento e temperatura no nível e vizinhos (GFS)", True),
+    "sigwx": ("🗺️ Cartas SIGWX das validades do voo", True),
 }
 
 
-def aba_gerar_voo(plano, nivel, api_key, fontes):
-    """fontes = {"goes", "metars_e_tafs", "sigmets", "raios", "modelo"} (funções com cache do app.py)"""
+def aba_gerar_voo(plano, fl, voo, api_key, fontes):
+    """fontes = {"goes", "metars_e_tafs", "sigmets", "raios"} (funções com cache do app.py)"""
     if not plano:
-        st.info("Planeje um voo na barra lateral (origem, destino, alternativa e nível de cruzeiro) "
+        st.info("Planeje um voo na barra lateral (origem, destino, alternativa, nível e horário) "
                 "para gerar o pacote de briefing em PDF.", icon="🧭")
         return
-    st.markdown(f"Monte o **pacote de briefing** do voo {plano[0]} → {plano[1]}"
-                + (f" (altn {plano[2]})" if plano[2] else "") + f" no **{nivel.split(' · ')[0]}** "
-                "e baixe em PDF.")
+    st.markdown(f"Pacote de briefing do voo **{plano[0]} → {plano[1]}**"
+                + (f" (altn {plano[2]})" if plano[2] else "") + f" no **{fl_txt(fl)}** · {txt_horarios(voo)}")
     with st.form("gerar_voo"):
         st.markdown("**O que entra no PDF**")
         c1, c2 = st.columns(2)
         marcados = set()
-        for k, (texto, padrao) in ITENS_PDF.items():
-            col = c1 if list(ITENS_PDF).index(k) % 2 == 0 else c2
-            if col.checkbox(texto, value=padrao, key=f"pdf_{k}"):
+        for i, (k, (texto, padrao)) in enumerate(ITENS_PDF.items()):
+            if (c1 if i % 2 == 0 else c2).checkbox(texto, value=padrao, key=f"pdf_{k}"):
                 marcados.add(k)
-        c3, c4 = st.columns(2)
-        corredor = c3.select_slider("Largura do corredor da rota (para cada lado)", CORREDORES, value=50,
+        corredor = st.select_slider("Largura do corredor da rota (para cada lado)", CORREDORES, value=50,
                                     format_func=lambda n: f"{n} NM")
-        horas = c4.select_slider("Validade do vento (GFS)", options=[0, 3, 6, 9, 12, 18, 24],
-                                 format_func=lambda h: "agora" if h == 0 else f"+{h} h")
         gerar = st.form_submit_button("✈️ Gerar voo (PDF)", type="primary")
 
     if gerar:
@@ -431,28 +548,22 @@ def aba_gerar_voo(plano, nivel, api_key, fontes):
                     satelite = fontes["goes"]("IR")
                 except Exception:
                     satelite = None
-            gfs_dados = None
+            gfs_val = None
             if "vento" in marcados:
-                st.write("Modelo GFS (vento e temperatura)")
-                try:
-                    gfs_dados = _carregar_gfs(fontes["modelo"], horas)
-                except Exception:
-                    gfs_dados = None
+                st.write("Modelo GFS das validades do voo")
+                gfs_val, _, erros = gfs_do_voo(voo)
+                for e in erros:
+                    st.write(f"⚠️ {e}")
             sigwx = None
             if "sigwx" in marcados:
-                st.write("Carta SIGWX")
-                url, _ = _sigwx_url(api_key)
-                if url:
-                    try:
-                        sigwx = (_sigwx_png(url), f"Imagem: {url}")
-                    except Exception:
-                        sigwx = None
+                st.write("Cartas SIGWX")
+                sigwx = sigwx_do_voo(voo, api_key)
             st.write("Desenhando o mapa e o PDF")
-            b = montar_briefing(plano, nivel, marcados, corredor, metars, tafs, avisos_ad, textos, pontos,
-                                satelite, gfs_dados, sigwx)
+            b = montar_briefing(plano, fl, voo, marcados, corredor, metars, tafs, avisos_ad, textos, pontos,
+                                satelite, gfs_val, sigwx)
             pdf = relatorio_pdf.gerar(b)
             st.session_state["pdf_voo"] = {"bytes": pdf, "mapa": b.get("mapa_png"),
-                                           "nome": f"briefing_{plano[0]}_{plano[1]}_{datetime.now(timezone.utc):%d%m_%H%MZ}.pdf",
+                                           "nome": f"briefing_{plano[0]}_{plano[1]}_{horarios(voo)[0]:%d%m_%H%MZ}.pdf",
                                            "avisos": b["indisponiveis"]}
             status.update(label="Briefing pronto!", state="complete", expanded=False)
 

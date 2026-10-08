@@ -31,10 +31,13 @@ NIVEIS = {
     "FL100 · 700 hPa":     ("iso", 700),
     "FL140 · 600 hPa":     ("iso", 600),
     "FL180 · 500 hPa":     ("iso", 500),
+    "FL210 · 450 hPa":     ("iso", 450),
     "FL240 · 400 hPa":     ("iso", 400),
+    "FL270 · 350 hPa":     ("iso", 350),
     "FL300 · 300 hPa":     ("iso", 300),
     "FL340 · 250 hPa":     ("iso", 250),
     "FL390 · 200 hPa":     ("iso", 200),
+    "FL450 · 150 hPa":     ("iso", 150),
 }
 VARS_GRIB = ["UGRD", "VGRD", "TMP", "RH"]      # RH já vem para o futuro cálculo de gelo
 
@@ -80,14 +83,15 @@ def _url(data_run, hora_run, fhora):
             f"file={arquivo}&{'&'.join(niveis)}&{'&'.join(vars_)}&subregion=&{regiao}&dir={pasta}")
 
 
-def baixar(horas_a_frente=0, agora=None):
+def baixar(horas_a_frente=0, agora=None, alvo=None):
     """Acha a rodada mais recente já publicada e baixa a previsão válida para
-    'agora + horas_a_frente'. Retorna (bytes_grib, info) ou levanta exceção.
+    'agora + horas_a_frente' (ou para o instante 'alvo', se informado, já em hora cheia).
+    Retorna (bytes_grib, info) ou levanta exceção.
 
     O GFS roda 00, 06, 12 e 18Z e fica disponível ~3,5 a 5 h depois.
     Tentamos da rodada mais nova para a mais velha."""
     agora = agora or datetime.now(timezone.utc)
-    alvo = (agora + timedelta(hours=horas_a_frente)).replace(minute=0, second=0, microsecond=0)
+    alvo = alvo or (agora + timedelta(hours=horas_a_frente)).replace(minute=0, second=0, microsecond=0)
     ultima = agora.replace(hour=agora.hour - agora.hour % 6, minute=0, second=0, microsecond=0)
     erros = []
     for k in range(5):                                   # até 24 h para trás

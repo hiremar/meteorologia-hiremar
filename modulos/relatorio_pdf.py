@@ -120,7 +120,7 @@ def _bloco_aerodromo(a):
 
 def _tabela(cab, linhas, larguras, cores_linha=None):
     dados = [[Paragraph(_t(c), E["celb"]) for c in cab]]
-    dados += [[Paragraph(_t(v), E["cel"]) for v in l] for l in linhas]
+    dados += [[Paragraph(_t(v).replace("\n", "<br/>"), E["cel"]) for v in l] for l in linhas]
     t = Table(dados, colWidths=larguras, repeatRows=1)
     estilo = [("BACKGROUND", (0, 0), (-1, 0), AZUL2), ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9d3dc")),
               ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f6f9")]),
@@ -130,6 +130,15 @@ def _tabela(cab, linhas, larguras, cores_linha=None):
         estilo.append(("BACKGROUND", (col, lin + 1), (col, lin + 1), cor))
     t.setStyle(TableStyle(estilo))
     return t
+
+
+def _posicao(l):
+    return f"{abs(l['lat']):.1f}{'S' if l['lat'] < 0 else 'N'} {abs(l['lon']):.1f}{'W' if l['lon'] < 0 else 'E'}"
+
+
+def _comp(c):
+    """+12 -> 'cauda 12 kt' ; -20 -> 'proa 20 kt'"""
+    return "nulo" if abs(c) < 1 else f"{'cauda' if c > 0 else 'proa'} {abs(c)} kt"
 
 
 def _pagina(canvas, doc, titulo):
@@ -167,8 +176,8 @@ def gerar(b):
     hist.append(Paragraph(_t(f"Briefing de voo: {rota_txt}"), E["titulo"]))
     agora = b.get("gerado_em") or datetime.now(timezone.utc)
     hist.append(Paragraph(_t(
-        f"{b['nivel']} · distância {b['distancia_nm']} NM · rumo verdadeiro inicial {b['rumo']:03d}° · "
-        f"gerado em {agora:%d/%m/%Y %H:%M}Z"), E["sub"]))
+        f"{b['nivel']} · {b.get('horarios', '')} · distância {b['distancia_nm']} NM · "
+        f"rumo verdadeiro inicial {b['rumo']:03d}° · gerado em {agora:%d/%m/%Y %H:%M}Z"), E["sub"]))
     if b.get("resumo"):
         hist.append(Spacer(1, 3 * mm))
         linhas = [[Paragraph(f"<b>{_t(k)}</b>", E["corpo"]), Paragraph(_t(v), E["corpo"])] for k, v in b["resumo"]]
@@ -222,38 +231,49 @@ def gerar(b):
     if b.get("vento"):
         v = b["vento"]
         hist.append(PageBreak())
-        hist += _secao(f"Vento e temperatura no {v['nivel']} (modelo GFS)")
+        hist += _secao(f"Vento e temperatura: {v['nivel']} e níveis vizinhos (modelo GFS)")
         hist.append(Paragraph(_t(v["fonte"]), E["peq"]))
         hist.append(Spacer(1, 2 * mm))
-        cores = []
+        comp = v["comparacao"]
+        hist.append(_tabela(list(comp[0]), [list(l.values()) for l in comp],
+                            [42 * mm, 38 * mm, 28 * mm, 40 * mm, LARG - 148 * mm],
+                            [(i, 0, colors.HexColor("#fff4c2")) for i, l in enumerate(comp) if "escolhido" in l["Nível"]]))
+        hist.append(Spacer(1, 3 * mm))
+        # Tabela ponto a ponto: os três níveis lado a lado (vento / temperatura / componente)
+        niveis = v["niveis"]
+        cab = ["Nº", "Hora", "Posição"] + [n + (" *" if n == v["nivel"] else "") for n in niveis] + ["GFS"]
+        linhas, cores = [], []
         for i, l in enumerate(v["linhas"]):
-            c = l["componente"]
-            if c <= -15:
-                cores.append((i, 5, colors.HexColor("#ffd9d9")))
-            elif c >= 15:
-                cores.append((i, 5, colors.HexColor("#d9f5df")))
-        hist.append(_tabela(
-            ["Distância", "Posição", "Rumo V", "Vento", "Temp.", "Componente", "Desvio ISA"],
-            [[f"{l['dist_nm']} NM", f"{abs(l['lat']):.1f}{'S' if l['lat'] < 0 else 'N'} "
-              f"{abs(l['lon']):.1f}{'W' if l['lon'] < 0 else 'E'}", f"{l['rumo']:03d}°", l["vento"],
-              "-" if l["temp_c"] is None else f"{l['temp_c']} °C", l["comp_txt"],
-              "-" if l["isa_desvio"] is None else f"ISA{l['isa_desvio']:+d}"] for l in v["linhas"]],
-            [22 * mm, 34 * mm, 18 * mm, 26 * mm, 20 * mm, 32 * mm, LARG - 152 * mm], cores))
+            celulas = [str(l["n"]), f"{l['hora']:%H:%M}Z", f"{l['dist_nm']} NM\n" + _posicao(l)]
+            for j, n in enumerate(niveis):
+                x = l["por_nivel"][n]
+                celulas.append(f"{x['vento']}\n{x['temp_c']} °C ISA{x['isa_desvio']:+d}\n"
+                               f"{_comp(x['componente'])}")
+                if x["componente"] <= -15:
+                    cores.append((i, 3 + j, colors.HexColor("#ffe3e3")))
+                elif x["componente"] >= 15:
+                    cores.append((i, 3 + j, colors.HexColor("#e2f7e6")))
+            celulas.append(f"{l['validade']:%d/%m %H}Z")
+            linhas.append(celulas)
+        larg_n = (LARG - 10 * mm - 15 * mm - 28 * mm - 20 * mm) / len(niveis)
+        hist.append(_tabela(cab, linhas, [10 * mm, 15 * mm, 28 * mm] + [larg_n] * len(niveis) + [20 * mm], cores))
+        hist.append(Paragraph("* nível escolhido. Verde = vento de cauda >= 15 kt; vermelho = proa >= 15 kt.",
+                              E["peq"]))
         hist.append(Spacer(1, 2 * mm))
         hist.append(Paragraph(_t(v["resumo_txt"]), E["corpo"]))
         if v.get("mapa_png"):
             hist.append(Spacer(1, 3 * mm))
-            hist.append(_imagem(v["mapa_png"], altura_max=105 * mm))
-            hist.append(Paragraph("Barbelas: cada traço longo = 10 kt, traço curto = 5 kt, bandeira = 50 kt. "
-                                  "A haste aponta para DE ONDE o vento sopra.", E["peq"]))
+            hist.append(_imagem(v["mapa_png"], altura_max=150 * mm))
+            hist.append(Paragraph("Os números no mapa são os pontos da tabela. Barbelas: traço longo = 10 kt, "
+                                  "traço curto = 5 kt, bandeira = 50 kt; a haste aponta para DE ONDE o vento sopra.",
+                                  E["peq"]))
 
     # ---------------- SIGWX ----------------
-    if b.get("sigwx_png"):
+    for carta in b.get("sigwx") or []:
         hist.append(PageBreak())
-        hist += _secao("Carta SIGWX (SFC/FL250) - REDEMET")
-        if b.get("sigwx_txt"):
-            hist.append(Paragraph(_t(b["sigwx_txt"]), E["peq"]))
-        hist.append(_imagem(b["sigwx_png"], altura_max=215 * mm))
+        hist += _secao(carta["titulo"])
+        hist.append(Paragraph(_t(carta["nota"]), E["peq"]))
+        hist.append(_imagem(carta["png"], altura_max=215 * mm))
 
     hist += [Spacer(1, 6 * mm), Paragraph(
         "Fontes: METAR, TAF, SIGMET, aviso de aeródromo, raios (STSC) e SIGWX: API REDEMET (DECEA). "
