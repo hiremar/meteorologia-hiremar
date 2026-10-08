@@ -27,7 +27,10 @@ MAPAS_FUNDO = [
 ]
 
 
-def adicionar_mapas_fundo(m, inicial="Escuro"):
+def adicionar_mapas_fundo(m, inicial="Escuro", rotulos=True):
+    """rotulos=False: a camada de fronteiras/nomes começa desligada (usado quando há carta
+    aeronáutica na tela: a carta já tem os limites dela e as linhas do mapa só atrapalham).
+    Ela continua no botão de camadas, para quem quiser ligar de novo."""
     for nome, url, attr, zmax in MAPAS_FUNDO:
         folium.TileLayer(url, attr=attr, name=nome, max_zoom=zmax, overlay=False,
                          show=(nome == inicial)).add_to(m)
@@ -35,7 +38,7 @@ def adicionar_mapas_fundo(m, inicial="Escuro"):
     # (num painel próprio, acima do satélite e abaixo dos marcadores)
     folium.map.CustomPane("rotulos", z_index=450).add_to(m)
     folium.TileLayer(ESRI.format("Reference/World_Boundaries_and_Places"), attr="© Esri",
-                     name="Fronteiras e nomes", overlay=True, show=True, pane="rotulos",
+                     name="Fronteiras e nomes", overlay=True, show=rotulos, pane="rotulos",
                      max_zoom=16).add_to(m)
 
 

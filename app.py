@@ -259,7 +259,8 @@ if aba.startswith("🛰️"):
     # ---------------- mapa ----------------
     m = folium.Map(location=[-15.0, -55.0], zoom_start=4, tiles=None, control_scale=True)
     m.get_root().header.add_child(folium.Element(cm.CSS_MAPA))
-    cm.adicionar_mapas_fundo(m)
+    # Com carta ENRC/WAC na tela, as linhas de estados/países do mapa ficam desligadas
+    cm.adicionar_mapas_fundo(m, rotulos=(enrc == "Nenhuma" and not wacs))
 
     # Primeiro as ENRC, depois as WAC: no mapa, o que é adicionado por último fica por cima.
     camadas = []
