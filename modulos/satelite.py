@@ -27,6 +27,7 @@ LON_MIN, LON_MAX = -95.0, -25.0
 RES_GRAUS = 0.05          # 0.05° ≈ 5 km. Menor = mais nítido, porém mais pesado
 PASSO_TEMP = 2            # grade de temperatura do mouse: 1 a cada 2 pixels (~10 km)
 K_BASE = 170              # temperatura (K) guardada como (K - 170) em 1 byte: 170 a 424 K
+RELEVO_IR = False         # True = sombreamento de "relevo" no IR (ar 3D). Desligado: IR plano, mais fiel
 
 # Qual arquivo e quais variáveis usar para cada canal
 CANAIS = {
@@ -245,7 +246,9 @@ def processar_dataset(ds, canal, instante=None):
     if canal == "IR":
         kelvin = campo("CMI", suave=False)
         tc = kelvin - 273.15
-        rgba = sombrear_relevo(colorir_ir(np.nan_to_num(tc, nan=99.0)), tc)
+        rgba = colorir_ir(np.nan_to_num(tc, nan=99.0))
+        if RELEVO_IR:
+            rgba = sombrear_relevo(rgba, tc)
         rgba[np.isnan(kelvin), 3] = 0                                  # sem dado = transparente
         extras["temp_k"] = kelvin[::PASSO_TEMP, ::PASSO_TEMP]
     else:
