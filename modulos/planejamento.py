@@ -625,9 +625,11 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
             b = montar_briefing(plano, fl, voo, marcados, corredor, metars, tafs, avisos_ad, textos, pontos,
                                 satelite, gfs_val, sigwx)
             pdf = relatorio_pdf.gerar(b)
-            st.session_state["pdf_voo"] = {"bytes": pdf, "mapa": b.get("mapa_png"),
-                                           "nome": f"briefing_{plano[0]}_{plano[1]}_{horarios(voo)[0]:%d%m_%H%MZ}.pdf",
-                                           "avisos": b["indisponiveis"]}
+            st.session_state["pdf_voo"] = {
+                "bytes": pdf, "mapa": b.get("mapa_png"), "avisos": b["indisponiveis"],
+                "nome": f"briefing_{plano[0]}_{plano[1]}_{horarios(voo)[0]:%d%m_%H%MZ}_{corredor}NM.pdf",
+                "resumo": f"gerado às {datetime.now(timezone.utc):%H:%M}Z · corredor de {corredor} NM · "
+                          f"{len(marcados)} item(ns)"}
             status.update(label="Briefing pronto!", state="complete", expanded=False)
 
     pronto = st.session_state.get("pdf_voo")
@@ -636,5 +638,8 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
             st.warning(a, icon="⚠️")
         st.download_button("⬇️ Baixar o PDF do briefing", pronto["bytes"], pronto["nome"], "application/pdf",
                            type="primary")
+        # O botão entrega SEMPRE o último PDF gerado: mudou as opções, tem que gerar de novo
+        st.caption(f"PDF {pronto.get('resumo', '')}. Mudou alguma opção acima? Clique em "
+                   "**Gerar voo (PDF)** de novo antes de baixar.")
         if pronto.get("mapa"):
             st.image(pronto["mapa"], caption="Prévia do mapa que está no PDF", use_container_width=True)

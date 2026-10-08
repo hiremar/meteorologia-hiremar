@@ -15,7 +15,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
-from reportlab.platypus import (Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
+from reportlab.platypus import (CondPageBreak, Image, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
                                 Table, TableStyle)
 from xml.sax.saxutils import escape
 
@@ -67,9 +67,9 @@ def _secao(texto):
     t.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, 0), AMARELO), ("BACKGROUND", (1, 0), (1, 0), AZUL2),
                            ("LEFTPADDING", (1, 0), (1, 0), 8), ("TOPPADDING", (0, 0), (-1, -1), 5),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-    esp = Spacer(1, 2.5 * mm)
-    t.keepWithNext = esp.keepWithNext = True      # o título nunca fica sozinho no pé da página
-    return [Spacer(1, 4 * mm), t, esp]
+    # CondPageBreak: se sobrar menos de 55 mm na página, o título já começa na próxima
+    # (assim ele nunca fica sozinho no pé da página, longe do conteúdo dele)
+    return [CondPageBreak(55 * mm), Spacer(1, 4 * mm), t, Spacer(1, 2.5 * mm)]
 
 
 def _caixa_msg(texto, fundo=VERDE_MSG, borda=colors.HexColor("#2e9e44")):
