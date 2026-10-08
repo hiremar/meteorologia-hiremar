@@ -82,6 +82,12 @@ def goes(canal):
     return sat.carregar_overlay(canal)
 
 
+@st.cache_data(ttl=600, show_spinner=False, max_entries=6)
+def goes_rota(canal, regiao, arquivo):
+    """Recorte em alta resolução (~2 km) em volta da rota, do MESMO arquivo da imagem geral."""
+    return sat.carregar_overlay(canal, regiao, arquivo)
+
+
 @st.cache_data(ttl=300, show_spinner=False)          # 5 min
 def metars_e_tafs(chave):
     metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
@@ -164,6 +170,9 @@ if aba.startswith("🛰️"):
     st.sidebar.subheader("📡 Camadas")
     with st.sidebar.expander("🛰️ Satélite"):
         ver_ir = st.checkbox("Infravermelho (GOES-19 canal 13)", value=True)
+        relevo_ir = st.checkbox("Relevo 3D no infravermelho", value=False, disabled=not ver_ir,
+                                help="Sombreia os topos das nuvens como um relevo (nuvem mais fria = mais alta). "
+                                     "Bom para comparar com a versão plana em aula.")
         ver_vis = st.checkbox("Visível em cores reais (GOES-19 canais 1, 2 e 3)", value=False,
                               help="Como o olho veria do espaço. Só de dia: à noite fica transparente.")
 
@@ -215,12 +224,11 @@ if aba.startswith("🛰️"):
                                        index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", 100)))
         # Horário do voo (UTC). Padrão: decolagem daqui a ~30 min e 1 h de voo.
         voo_atual = st.session_state.get("voo") or pl.voo_padrao()
-        # A barra lateral é estreita: a data ocupa a linha inteira; hora e tempo de voo dividem a de baixo
+        # A barra lateral é estreita: um campo por linha (lado a lado os rótulos quebravam e ficava torto)
         data_etd = st.date_input("Data da decolagem (UTC)", voo_atual["etd"].date(), format="DD/MM/YYYY")
-        c1, c2 = st.columns(2)
-        hora_etd = c1.time_input("Hora (UTC)", voo_atual["etd"].time(), step=300)
-        eet_txt = c2.text_input("EET (hh:mm)", f"{voo_atual['eet_min'] // 60:02d}:"
-                                f"{voo_atual['eet_min'] % 60:02d}", help="Tempo de voo. Ex.: 01:15 = 1 h e 15 min.")
+        hora_etd = st.time_input("Hora da decolagem (UTC)", voo_atual["etd"].time(), step=300)
+        eet_txt = st.text_input("Tempo de voo · EET (hh:mm)", f"{voo_atual['eet_min'] // 60:02d}:"
+                                f"{voo_atual['eet_min'] % 60:02d}", help="Ex.: 01:15 = 1 h e 15 min.")
         planejar = st.form_submit_button("✈️ Planejar voo", type="primary")
     if planejar:
         etd = datetime.combine(data_etd, hora_etd, tzinfo=timezone.utc)
@@ -279,12 +287,27 @@ if aba.startswith("🛰️"):
                 continue
             try:
                 url_img, limites, instante, extras = goes(canal)
+                if canal == "IR" and relevo_ir:
+                    url_img = extras.get("url_relevo", url_img)
                 if canal == "IR" and extras.get("temp_url"):
                     # legenda com a barra de cores e a temperatura onde o mouse está
                     cm.LeituraTemperatura(extras["temp_url"], limites, sat.K_BASE).add_to(m)
-                folium.raster_layers.ImageOverlay(url_img, bounds=limites, opacity=0.85 if canal == "IR" else 1.0,
+                opac = 0.85 if canal == "IR" else 1.0
+                folium.raster_layers.ImageOverlay(url_img, bounds=limites, opacity=opac,
                                                   name=f"{nome} {fmt_z(instante)}", interactive=False,
                                                   pixelated=False).add_to(m)   # False = navegador suaviza no zoom
+                # Com voo planejado: por cima, um recorte em ~2 km só na região da rota (nítido no zoom)
+                if plano:
+                    try:
+                        regiao = sat.regiao_da_rota([ad.COORDS[i] for i in plano if i])
+                        url_hd, lim_hd, _, ext_hd = goes_rota(canal, regiao, extras["arquivo"])
+                        if canal == "IR" and relevo_ir:
+                            url_hd = ext_hd.get("url_relevo", url_hd)
+                        folium.raster_layers.ImageOverlay(url_hd, bounds=lim_hd, opacity=opac,
+                                                          name=f"{nome} detalhado na rota", interactive=False,
+                                                          pixelated=False).add_to(m)
+                    except Exception as e:
+                        avisos.append(f"{nome}: recorte detalhado da rota indisponível ({type(e).__name__}).")
                 idade = int((datetime.now(timezone.utc) - instante).total_seconds() // 60)
                 chips.append((f"{nome}: {fmt_z(instante)} (há {idade} min)", idade > 30))
             except Exception as e:
@@ -418,7 +441,7 @@ if aba.startswith("🛰️"):
     with abas[3]:
         pl.aba_vento(plano, nivel, voo)
     with abas[4]:
-        pl.aba_gerar_voo(plano, nivel, voo, api_key, {"goes": goes, "metars_e_tafs": metars_e_tafs,
+        pl.aba_gerar_voo(plano, nivel, voo, api_key, {"goes": goes, "goes_rota": goes_rota, "metars_e_tafs": metars_e_tafs,
                                                       "sigmets": lista_sigmets, "raios": raios})
 
 # ============================================================================

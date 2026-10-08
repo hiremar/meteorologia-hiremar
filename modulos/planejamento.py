@@ -548,8 +548,7 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
         b["mapa_png"] = folha.png()
         partes = []
         if satelite:
-            tipo = "visível (cores reais)" if satelite[0].startswith("data:") and len(satelite) > 3 \
-                and not satelite[3].get("temp_url") else "IR"
+            tipo = "visível (cores reais)" if len(satelite) > 3 and satelite[3].get("canal") == "VIS" else "IR"
             partes.append(f"Situação ATUAL: satélite GOES-19 {tipo} de {satelite[2]:%d/%m %H:%M}Z")
         partes.append(f"Etiquetas: categoria de voo FAA pelo METAR. Corredor da rota: {corredor_nm} NM")
         if folha.avisos:
@@ -614,6 +613,14 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
                 st.write("Satélite GOES-19")
                 try:
                     satelite = fontes["goes"](canal_sat)
+                    # recorte detalhado (~2 km) da região da rota, do mesmo horário: PDF bem mais nítido
+                    if "goes_rota" in fontes:
+                        from . import satelite as sat_mod
+                        regiao = sat_mod.regiao_da_rota([ad.COORDS[i] for i in plano if i])
+                        try:
+                            satelite = fontes["goes_rota"](canal_sat, regiao, satelite[3]["arquivo"])
+                        except Exception:
+                            pass                      # fica com a imagem geral
                 except Exception:
                     satelite = None
             gfs_val = None

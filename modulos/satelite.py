@@ -27,7 +27,9 @@ LON_MIN, LON_MAX = -95.0, -25.0
 RES_GRAUS = 0.05          # 0.05° ≈ 5 km. Menor = mais nítido, porém mais pesado
 PASSO_TEMP = 2            # grade de temperatura do mouse: 1 a cada 2 pixels (~10 km)
 K_BASE = 170              # temperatura (K) guardada como (K - 170) em 1 byte: 170 a 424 K
-RELEVO_IR = False         # True = sombreamento de "relevo" no IR (ar 3D). Desligado: IR plano, mais fiel
+REGIAO_PADRAO = (LAT_MIN, LAT_MAX, LON_MIN, LON_MAX, RES_GRAUS)   # América do Sul inteira, ~5 km
+RES_DETALHE = 0.02        # recorte da rota: ~2 km, a resolução nativa do GOES (o máximo que existe)
+LARG_MAX_DETALHE = 1800   # pixels: rota muito longa -> resolução um pouco menor, para não pesar
 
 # Qual arquivo e quais variáveis usar para cada canal
 CANAIS = {
@@ -50,22 +52,24 @@ ESCALA_IR = [
 ]
 
 
-def eixos():
+def eixos(regiao=None):
     """Longitudes (oeste -> leste) e latitudes (norte -> sul) dos pixels do mapa.
-    As linhas são espaçadas em Mercator, que é como o Leaflet desenha o mapa."""
-    lons = np.arange(LON_MIN, LON_MAX, RES_GRAUS)
+    As linhas são espaçadas em Mercator, que é como o Leaflet desenha o mapa.
+    regiao = (lat_min, lat_max, lon_min, lon_max, resolução em graus); padrão = América do Sul."""
+    la0, la1, lo0, lo1, res = regiao or REGIAO_PADRAO
+    lons = np.arange(lo0, lo1, res)
     merc = lambda lat: np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
-    n_lin = int(round((LAT_MAX - LAT_MIN) / RES_GRAUS * 1.15))
-    ys = np.linspace(merc(LAT_MAX), merc(LAT_MIN), n_lin)
+    n_lin = int(round((la1 - la0) / res * 1.15))
+    ys = np.linspace(merc(la1), merc(la0), n_lin)
     lats = np.degrees(2 * np.arctan(np.exp(ys)) - np.pi / 2)
     return lons, lats
 
 
-def reprojetar_geos_para_latlon(x, y, lon0_deg, H, r_eq, r_pol):
+def reprojetar_geos_para_latlon(x, y, lon0_deg, H, r_eq, r_pol, regiao=None):
     """O satélite enxerga o planeta 'de longe' (projeção geoestacionária).
     O mapa espera lat/lon. Para CADA pixel do mapa final, calculamos
     de qual pixel do satélite ele vem (fórmulas do manual GOES-R PUG)."""
-    lons, lats = eixos()
+    lons, lats = eixos(regiao)
     lon_g, lat_g = np.meshgrid(np.radians(lons), np.radians(lats))
     lon0 = np.radians(lon0_deg)
     e2 = 1 - (r_pol / r_eq) ** 2
@@ -217,9 +221,29 @@ def instante_arquivo(nome):
     return datetime.strptime("".join(m.groups()), "%Y%j%H%M").replace(tzinfo=timezone.utc)
 
 
-def processar_dataset(ds, canal, instante=None):
+def regiao_da_rota(pontos, margem=3.0, minimo=8.0):
+    """Recorte em alta resolução em volta da rota: pontos = [[lat, lon], ...].
+    Devolve (lat_min, lat_max, lon_min, lon_max, resolução), arredondado para o cache funcionar."""
+    lats = [p[0] for p in pontos]
+    lons = [p[1] for p in pontos]
+    la0, la1 = min(lats) - margem, max(lats) + margem
+    lo0, lo1 = min(lons) - margem, max(lons) + margem
+    if la1 - la0 < minimo:
+        c = (la0 + la1) / 2
+        la0, la1 = c - minimo / 2, c + minimo / 2
+    if lo1 - lo0 < minimo:
+        c = (lo0 + lo1) / 2
+        lo0, lo1 = c - minimo / 2, c + minimo / 2
+    la0, la1 = max(la0, LAT_MIN), min(la1, LAT_MAX)
+    lo0, lo1 = max(lo0, LON_MIN), min(lo1, LON_MAX)
+    res = max(RES_DETALHE, (lo1 - lo0) / LARG_MAX_DETALHE, (la1 - la0) * 1.15 / LARG_MAX_DETALHE)
+    return (round(la0, 1), round(la1, 1), round(lo0, 1), round(lo1, 1), round(res, 3))
+
+
+def processar_dataset(ds, canal, instante=None, regiao=None):
     """Dataset aberto -> (matriz RGBA reprojetada, extras).
-    extras["temp_k"] (só no IR) = grade de temperatura em Kelvin para o mouse."""
+    extras["temp_k"] (só no IR) = grade de temperatura em Kelvin para o mouse.
+    extras["rgba_relevo"] (só no IR) = a mesma imagem com o sombreamento de relevo (ar 3D)."""
     p = ds["goes_imager_projection"].attrs
     r_eq, r_pol = float(p["semi_major_axis"]), float(p["semi_minor_axis"])
     H = float(p["perspective_point_height"]) + r_eq
@@ -227,7 +251,9 @@ def processar_dataset(ds, canal, instante=None):
     x = ds["x"].values.astype("float64")
     y = ds["y"].values.astype("float64")
 
-    lin, col, ok = reprojetar_geos_para_latlon(x, y, lon0, H, r_eq, r_pol)
+    lin, col, ok = reprojetar_geos_para_latlon(x, y, lon0, H, r_eq, r_pol, regiao)
+    if not ok.any():
+        raise RuntimeError("região fora da visão do satélite")
     r0, r1 = lin[ok].min(), lin[ok].max() + 1
     c0, c1 = col[ok].min(), col[ok].max() + 1
 
@@ -247,12 +273,12 @@ def processar_dataset(ds, canal, instante=None):
         kelvin = campo("CMI", suave=False)
         tc = kelvin - 273.15
         rgba = colorir_ir(np.nan_to_num(tc, nan=99.0))
-        if RELEVO_IR:
-            rgba = sombrear_relevo(rgba, tc)
         rgba[np.isnan(kelvin), 3] = 0                                  # sem dado = transparente
+        # as duas versões saem do mesmo download: plana e com relevo (o site deixa escolher)
+        extras["rgba_relevo"] = sombrear_relevo(rgba, tc)
         extras["temp_k"] = kelvin[::PASSO_TEMP, ::PASSO_TEMP]
     else:
-        lons, lats = eixos()
+        lons, lats = eixos(regiao)
         cos_sol = cos_zenite_solar(instante or datetime.now(timezone.utc), lats, lons)
         rgba = colorir_cor_real(campo("CMI_C01", True), campo("CMI_C02", True), campo("CMI_C03", True), cos_sol)
     return rgba, extras
@@ -283,24 +309,30 @@ def temperatura_para_data_url(kelvin):
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def carregar_overlay(canal):
+def carregar_overlay(canal, regiao=None, arquivo=None):
     """Faz tudo: acha o arquivo, lê só o pedaço necessário, reprojeta e colore.
     Retorna (data_url, limites, instante_utc, extras) ou levanta exceção com a explicação.
-    extras["temp_url"] (só IR): grade de temperatura para o mouse."""
+    regiao : recorte e resolução (padrão: América do Sul a ~5 km; ver regiao_da_rota)
+    arquivo: usar exatamente este arquivo do GOES (o recorte da rota usa o MESMO horário
+             da imagem geral, para não aparecer "emenda" entre as duas)
+    extras: "canal", "arquivo", "url_relevo" (IR com relevo), "temp_url" (IR, só na imagem geral)."""
     import s3fs          # importados aqui para o site abrir mesmo se faltarem
     import xarray as xr
 
     # skip_instance_cache / use_listings_cache=False: nada de reaproveitar listas de arquivos antigas
     fs = s3fs.S3FileSystem(anon=True, skip_instance_cache=True, use_listings_cache=False)
-    arquivo = achar_arquivo(fs, canal)
+    arquivo = arquivo or achar_arquivo(fs, canal)
     if arquivo is None:
         raise RuntimeError("nenhum arquivo GOES-19 encontrado nas últimas 3 horas")
     instante = instante_arquivo(arquivo)
     with fs.open(arquivo, "rb") as f:
         ds = xr.open_dataset(f, engine="h5netcdf")
-        rgba, extras = processar_dataset(ds, canal, instante)
-    limites = [[LAT_MIN, LON_MIN], [LAT_MAX, LON_MAX]]
-    saida = {}
-    if "temp_k" in extras:
+        rgba, extras = processar_dataset(ds, canal, instante, regiao)
+    la0, la1, lo0, lo1, _ = regiao or REGIAO_PADRAO
+    limites = [[la0, lo0], [la1, lo1]]
+    saida = {"canal": canal, "arquivo": arquivo}
+    if "rgba_relevo" in extras:
+        saida["url_relevo"] = rgba_para_data_url(extras["rgba_relevo"])
+    if "temp_k" in extras and regiao is None:
         saida["temp_url"] = temperatura_para_data_url(extras["temp_k"])
     return rgba_para_data_url(rgba), limites, instante, saida
