@@ -82,6 +82,13 @@ def goes(canal):
     return sat.carregar_overlay(canal)
 
 
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=8)
+def camada_sigwx(png):
+    """Carta SIGWX (imagem) -> camada transparente encaixada no mapa (modulos/sigwx_mapa.py)."""
+    from modulos import sigwx_mapa
+    return sigwx_mapa.preparar_camada(png)
+
+
 @st.cache_data(ttl=600, show_spinner=False, max_entries=6)
 def goes_rota(canal, regiao, arquivo):
     """Recorte em alta resolução (~2 km) em volta da rota, do MESMO arquivo da imagem geral."""
@@ -188,8 +195,13 @@ if aba.startswith("🛰️"):
                           disabled=not ver_ads)
         estilo = "FAA" if estilo.startswith("Etiquetas") else "REDEMET"
 
-    with st.sidebar.expander("🌬️ Modelo GFS (vento, temperatura)"):
-        ver_modelo = st.checkbox("Mostrar modelo GFS", value=False)
+    # Cartas METEOROLÓGICAS: SIGWX no mapa + vento/temperatura do modelo GFS
+    with st.sidebar.expander("🌦️ Cartas meteorológicas"):
+        ver_sigwx = st.checkbox("SIGWX SFC/FL250 (CIMAER)", value=False,
+                                help="A carta de tempo significativo encaixada no mapa. Com voo planejado, "
+                                     "vem a da validade do voo (Doc 8896: ±3 h); sem voo, a mais próxima de agora.")
+        st.markdown("**Vento e temperatura (modelo GFS)**")
+        ver_modelo = st.checkbox("Mostrar no mapa", value=False)
         if ver_modelo:
             chave_var = st.selectbox("Variável", list(gfs.VARIAVEIS),
                                      format_func=lambda k: gfs.VARIAVEIS[k]["nome"])
@@ -200,13 +212,12 @@ if aba.startswith("🛰️"):
             horas = st.select_slider("Validade", options=[0, 3, 6, 9, 12, 18, 24],
                                      format_func=lambda h: "agora" if h == 0 else f"+{h} h")
 
-    # Cartas do GeoAISWEB (DECEA), em duas partes separadas.
-    with st.sidebar.expander("🗺️ Cartas de rota ENRC (DECEA)"):
+    # Cartas AERONÁUTICAS do GeoAISWEB (DECEA). Aqui entram depois SID, STAR, IAC...
+    with st.sidebar.expander("🗺️ Cartas aeronáuticas (DECEA)"):
         # Baixa e alta cobrem a MESMA área, então é uma OU outra (radio = escolha única).
-        enrc = st.radio("Mostrar", ["Nenhuma", "Todas de baixa (L1–L9)", "Todas de alta (H1–H9)"])
-    with st.sidebar.expander("🧭 Cartas visuais WAC (DECEA)"):
+        enrc = st.radio("Cartas de rota ENRC", ["Nenhuma", "Todas de baixa (L1–L9)", "Todas de alta (H1–H9)"])
         # WACs vizinhas não se sobrepõem: pode escolher várias (ex.: São Paulo + Rio).
-        wacs = st.multiselect("Cartas WAC", WACS, format_func=nome_wac,
+        wacs = st.multiselect("Cartas visuais WAC", WACS, format_func=nome_wac,
                               help="A WAC fica por cima da ENRC na área dela.")
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
@@ -268,7 +279,7 @@ if aba.startswith("🛰️"):
     m = folium.Map(location=[-15.0, -55.0], zoom_start=4, tiles=None, control_scale=True)
     m.get_root().header.add_child(folium.Element(cm.CSS_MAPA))
     # Com carta ENRC/WAC na tela, as linhas de estados/países do mapa ficam desligadas
-    cm.adicionar_mapas_fundo(m, rotulos=(enrc == "Nenhuma" and not wacs))
+    cm.adicionar_mapas_fundo(m, rotulos=(enrc == "Nenhuma" and not wacs))     # (a SIGWX não tem fronteiras)
 
     # Primeiro as ENRC, depois as WAC: no mapa, o que é adicionado por último fica por cima.
     camadas = []
@@ -325,6 +336,23 @@ if aba.startswith("🛰️"):
                 chips.append((f"GFS {info['run']:%d/%H}Z +{info['fhora']}h → válido {fmt_z(info['valido'])}", False))
             except Exception as e:
                 avisos.append(f"Modelo GFS indisponível agora ({e}).")
+
+        # SIGWX por cima do satélite e do modelo (o traço claro com contorno lê bem sobre os dois)
+        if ver_sigwx:
+            voo_sigwx = voo if plano else {
+                "etd": datetime.now(timezone.utc), "eet_min": 0}       # sem voo: a validade mais próxima de agora
+            cartas = [c for c in pl.sigwx_do_voo(voo_sigwx, api_key) if c["png"]]
+            if not cartas:
+                avisos.append("Carta SIGWX indisponível na REDEMET agora.")
+            for i, c in enumerate(cartas):
+                try:
+                    url_sig, lim_sig = camada_sigwx(c["png"])
+                    folium.raster_layers.ImageOverlay(url_sig, bounds=lim_sig, name=c["titulo"], show=(i == 0),
+                                                      interactive=False, pixelated=False).add_to(m)
+                    chips.append((c["titulo"] + (" (as outras validades: botão de camadas)"
+                                                 if i == 0 and len(cartas) > 1 else ""), c["validade"] is None))
+                except Exception as e:
+                    avisos.append(f"Não consegui encaixar a SIGWX no mapa ({type(e).__name__}).")
 
         nao_desenhados = []
         if ver_sigmet:
