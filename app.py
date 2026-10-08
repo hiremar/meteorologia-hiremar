@@ -16,6 +16,7 @@ from modulos import aerodromos as ad
 from modulos import camadas_mapa as cm
 from modulos import metar as mt
 from modulos import modelo_gfs as gfs
+from modulos import planejamento as pl
 from modulos import redemet as rd
 from modulos import satelite as sat
 
@@ -195,20 +196,28 @@ if aba.startswith("🛰️"):
         destino = st.selectbox("Destino", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
         altn = st.selectbox("Alternativa (opcional)", opcoes, index=None, placeholder="Escolha...",
                             format_func=ad.rotulo)
+        # Os níveis são os do modelo GFS (é onde temos vento e temperatura para o planejamento)
+        nivel_escolhido = st.selectbox("Nível de cruzeiro", pl.NIVEIS_CRUZEIRO,
+                                       index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", "FL100 · 700 hPa")),
+                                       help="Níveis com dados do modelo GFS. Escolha o mais próximo do seu.")
         planejar = st.form_submit_button("✈️ Planejar voo", type="primary")
     if planejar:
         if origem and destino:
             st.session_state["plano"] = [origem, destino, altn]
+            st.session_state["nivel"] = nivel_escolhido
+            st.session_state.pop("pdf_voo", None)       # PDF de um plano anterior não vale mais
         else:
             aba_plano.warning("Escolha pelo menos origem e destino.")
     if st.session_state.get("plano") and aba_plano.button("Limpar planejamento"):
         del st.session_state["plano"]
         st.rerun()
     plano = st.session_state.get("plano")
+    nivel = st.session_state.get("nivel", "FL100 · 700 hPa")
 
     # ---------------- título ----------------
     if plano:
-        st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else ""))
+        st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else "")
+                 + f" · {nivel.split(' · ')[0]}")
     else:
         st.title("🛰️ Briefing operacional")
     aviso_instrucao()
@@ -332,36 +341,48 @@ if aba.startswith("🛰️"):
             for t in nao_desenhados:
                 st.markdown(f"<div class='msg'>{html.escape(t)}</div>", unsafe_allow_html=True)
 
-    # ---------------- METAR / TAF da rota ----------------
-    if plano:
-        st.subheader("🔍 Dados meteorológicos da rota")
-        papeis = ["Origem", "Destino", "Alternativa"]
-        cols = st.columns(3)
-        for col, papel, icao in zip(cols, papeis, plano):
-            if not icao:
-                continue
-            metar = (metars.get(icao) or {}).get("mens", "")
-            taf = (tafs.get(icao) or {}).get("mens", "")
-            info = mt.analisar(metar) if metar else None
-            cat = info["faa"] if info else "ND"
-            texto, fundo, cor = mt.CATEGORIAS_FAA[cat]
-            idade = f" · há {info['idade_min']} min" if info and info["idade_min"] is not None else ""
-            with col:
-                st.markdown(
-                    f"<div class='cartao-titulo'>{papel}: {icao}"
-                    f"<span class='cat-chip' style='background:{fundo};color:{cor}'>{texto}</span></div>"
-                    f"<div class='rotulo'>{html.escape(ad.NOMES.get(icao, ''))}{idade}</div>"
-                    + "".join(f"<div class='rotulo' style='color:#ffd666'>⚠ AVISO DE AERÓDROMO</div>"
-                              f"<div class='msg' style='border-left-color:#ffbe00;color:#ffe9a8'>"
-                              f"{html.escape(' · '.join(rd.decodificar_aviso(a)))}</div>"
-                              for a in avisos_ad.get(icao, [])) +
-                    f"<div class='rotulo'>METAR</div><div class='msg'>{html.escape(metar or 'não disponível')}</div>"
-                    f"<div class='rotulo'>TAF</div><div class='msg taf'>"
-                    f"{html.escape(mt.formatar_taf(taf) if taf else 'não disponível')}</div>",
-                    unsafe_allow_html=True)
-    else:
-        st.info("Escolha origem, destino e alternativa na barra lateral e clique em **Planejar voo** "
-                "para ver a rota e os METAR/TAF completos aqui embaixo.", icon="🧭")
+    # ---------------- PLANEJAMENTO DE VOO (abas embaixo do mapa) ----------------
+    st.subheader("📍 Planejamento de voo")
+    abas = st.tabs(["🔍 Dados da rota", "🕓 Consultar mensagens", "🗺️ SIGWX", "🌬️ Vento na rota",
+                    "📄 Gerar voo (PDF)"])
+    with abas[0]:
+        if plano:
+            papeis = ["Origem", "Destino", "Alternativa"]
+            cols = st.columns(3)
+            for col, papel, icao in zip(cols, papeis, plano):
+                if not icao:
+                    continue
+                metar = (metars.get(icao) or {}).get("mens", "")
+                taf = (tafs.get(icao) or {}).get("mens", "")
+                info = mt.analisar(metar) if metar else None
+                cat = info["faa"] if info else "ND"
+                texto, fundo, cor = mt.CATEGORIAS_FAA[cat]
+                idade = f" · há {info['idade_min']} min" if info and info["idade_min"] is not None else ""
+                with col:
+                    st.markdown(
+                        f"<div class='cartao-titulo'>{papel}: {icao}"
+                        f"<span class='cat-chip' style='background:{fundo};color:{cor}'>{texto}</span></div>"
+                        f"<div class='rotulo'>{html.escape(ad.NOMES.get(icao, ''))}{idade}</div>"
+                        + "".join(f"<div class='rotulo' style='color:#ffd666'>⚠ AVISO DE AERÓDROMO</div>"
+                                  f"<div class='msg' style='border-left-color:#ffbe00;color:#ffe9a8'>"
+                                  f"{html.escape(' · '.join(rd.decodificar_aviso(a)))}</div>"
+                                  for a in avisos_ad.get(icao, [])) +
+                        f"<div class='rotulo'>METAR</div><div class='msg'>{html.escape(metar or 'não disponível')}</div>"
+                        f"<div class='rotulo'>TAF</div><div class='msg taf'>"
+                        f"{html.escape(mt.formatar_taf(taf) if taf else 'não disponível')}</div>",
+                        unsafe_allow_html=True)
+        else:
+            st.info("Escolha origem, destino, alternativa e nível na barra lateral e clique em **Planejar voo** "
+                    "para ver a rota e os METAR/TAF completos aqui.", icon="🧭")
+    with abas[1]:
+        pl.aba_consulta(api_key, plano)
+    with abas[2]:
+        pl.aba_sigwx(api_key)
+    with abas[3]:
+        pl.aba_vento(plano, nivel, modelo)
+    with abas[4]:
+        pl.aba_gerar_voo(plano, nivel, api_key, {"goes": goes, "metars_e_tafs": metars_e_tafs,
+                                                 "sigmets": lista_sigmets, "raios": raios, "modelo": modelo})
 
 # ============================================================================
 # ABA 2 — AULAS E SIMULADORES

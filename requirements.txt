@@ -13,3 +13,6 @@ h5py
 # leitura do GRIB2 do modelo GFS
 cfgrib
 eccodes
+# PDF do "Gerar voo" (planejamento) e as barbelas de vento
+reportlab
+matplotlib
