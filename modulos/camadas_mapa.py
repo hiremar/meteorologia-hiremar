@@ -277,3 +277,50 @@ def legenda_raios():
             "<path d='M.1-.5-.3.05H0L-.15.5.3-.1H.02L.22-.5Z' fill='{}' stroke='#000' stroke-width='.06'/></svg>")
     itens = "<br>".join(f"{raio.format(cor)} {texto}" for _, cor, texto in rd.FAIXAS_RAIOS)
     return f"<div class='legenda-mapa'><b>Raios</b><br>{itens}</div>"
+
+
+# ---------------------------------------------------------------------------
+# 7) Temperatura do satélite IR onde o mouse está + barra de cores em °C e K
+# ---------------------------------------------------------------------------
+with open(__file__.replace("camadas_mapa.py", "camada_temp.js"), encoding="utf-8") as _f:
+    _JS_TEMP = _f.read()
+
+
+def _legenda_ir_html():
+    """Barra com as cores do IR, marcas em °C (em cima) e K (embaixo) e a linha da leitura."""
+    from .satelite import legenda_ir_css
+    gradiente, t0, t1 = legenda_ir_css()                 # ex.: -5 °C ... -80 °C
+    marcas = [-10, -30, -50, -70]
+    pos = lambda t: (t0 - t) / (t0 - t1) * 100
+    celsius = "".join(f"<span style='position:absolute;left:{pos(t):.0f}%;transform:translateX(-50%)'>{t}</span>"
+                      for t in marcas)
+    kelvin = "".join(f"<span style='position:absolute;left:{pos(t):.0f}%;transform:translateX(-50%)'>"
+                     f"{t + 273:.0f}</span>" for t in marcas)
+    return ("<div><b>Satélite IR</b> · topo das nuvens</div>"
+            "<div style='position:relative;width:240px;height:13px;color:#c9d3dc'>" + celsius +
+            "<span style='position:absolute;right:-22px'>°C</span></div>"
+            f"<div class='barra' style='background:{gradiente}'></div>"
+            "<div style='position:relative;width:240px;height:13px;color:#9fb3c4'>" + kelvin +
+            "<span style='position:absolute;right:-16px'>K</span></div>"
+            "<div style='color:#9fb3c4;font-size:10px'>cinza = nuvens baixas/médias (mais quentes)</div>"
+            "<div class='leitura'>Passe o mouse sobre o mapa</div>")
+
+
+class LeituraTemperatura(folium.MacroElement):
+    _template = Template("""
+        {% macro header(this, kwargs) %}
+            <script>{{ this.js }}</script>
+        {% endmacro %}
+        {% macro script(this, kwargs) %}
+            new L.LeituraTemperatura({{ this.dados|tojson }},
+                {html: {{ this.html|tojson }}, position: "bottomleft"}).addTo({{ this._parent.get_name() }});
+        {% endmacro %}
+    """)
+
+    def __init__(self, temp_url, limites, base):
+        super().__init__()
+        self._name = "LeituraTemperatura"
+        self.js = _JS_TEMP
+        (lat0, lon0), (lat1, lon1) = limites
+        self.dados = {"url": temp_url, "base": base, "lat0": lat0, "lat1": lat1, "lon0": lon0, "lon1": lon1}
+        self.html = _legenda_ir_html()

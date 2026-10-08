@@ -164,7 +164,8 @@ if aba.startswith("🛰️"):
     st.sidebar.subheader("📡 Camadas")
     with st.sidebar.expander("🛰️ Satélite"):
         ver_ir = st.checkbox("Infravermelho (GOES-19 canal 13)", value=True)
-        ver_vis = st.checkbox("Visível (GOES-19 canal 2)", value=False, help="Só mostra nuvens durante o dia.")
+        ver_vis = st.checkbox("Visível em cores reais (GOES-19 canais 1, 2 e 3)", value=False,
+                              help="Como o olho veria do espaço. Só de dia: à noite fica transparente.")
 
     with st.sidebar.expander("⚡ SIGMET e raios"):
         ver_sigmet = st.checkbox("SIGMET", value=True)
@@ -214,11 +215,12 @@ if aba.startswith("🛰️"):
                                        index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", 100)))
         # Horário do voo (UTC). Padrão: decolagem daqui a ~30 min e 1 h de voo.
         voo_atual = st.session_state.get("voo") or pl.voo_padrao()
+        # A barra lateral é estreita: a data ocupa a linha inteira; hora e tempo de voo dividem a de baixo
+        data_etd = st.date_input("Data da decolagem (UTC)", voo_atual["etd"].date(), format="DD/MM/YYYY")
         c1, c2 = st.columns(2)
-        data_etd = c1.date_input("Decolagem (UTC)", voo_atual["etd"].date(), format="DD/MM/YYYY")
-        hora_etd = c2.time_input("Hora (UTC)", voo_atual["etd"].time(), step=300)
-        eet_txt = st.text_input("Tempo de voo (EET, hh:mm)", f"{voo_atual['eet_min'] // 60:02d}:"
-                                f"{voo_atual['eet_min'] % 60:02d}", help="Ex.: 01:15 = 1 h e 15 min.")
+        hora_etd = c1.time_input("Hora (UTC)", voo_atual["etd"].time(), step=300)
+        eet_txt = c2.text_input("EET (hh:mm)", f"{voo_atual['eet_min'] // 60:02d}:"
+                                f"{voo_atual['eet_min'] % 60:02d}", help="Tempo de voo. Ex.: 01:15 = 1 h e 15 min.")
         planejar = st.form_submit_button("✈️ Planejar voo", type="primary")
     if planejar:
         etd = datetime.combine(data_etd, hora_etd, tzinfo=timezone.utc)
@@ -270,12 +272,16 @@ if aba.startswith("🛰️"):
                             fmt="image/png", transparent=True, name=nome, overlay=True).add_to(m)
 
     with st.spinner("Carregando satélite, mensagens e modelo..."):
-        for canal, ligado, nome in (("IR", ver_ir, "GOES-19 IR (canal 13)"), ("VIS", ver_vis, "GOES-19 visível (canal 2)")):
+        # o visível primeiro (fica embaixo); o IR por cima: nuvens frias coloridas sobre a imagem real
+        for canal, ligado, nome in (("VIS", ver_vis, "GOES-19 visível (cores reais)"), ("IR", ver_ir, "GOES-19 IR (canal 13)")):
             if not ligado:
                 continue
             try:
-                url_img, limites, instante = goes(canal)
-                folium.raster_layers.ImageOverlay(url_img, bounds=limites, opacity=0.85 if canal == "IR" else 0.95,
+                url_img, limites, instante, extras = goes(canal)
+                if canal == "IR" and extras.get("temp_url"):
+                    # legenda com a barra de cores e a temperatura onde o mouse está
+                    cm.LeituraTemperatura(extras["temp_url"], limites, sat.K_BASE).add_to(m)
+                folium.raster_layers.ImageOverlay(url_img, bounds=limites, opacity=0.85 if canal == "IR" else 1.0,
                                                   name=f"{nome} {fmt_z(instante)}", interactive=False,
                                                   pixelated=False).add_to(m)   # False = navegador suaviza no zoom
                 idade = int((datetime.now(timezone.utc) - instante).total_seconds() // 60)

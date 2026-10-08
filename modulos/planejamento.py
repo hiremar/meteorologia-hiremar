@@ -548,8 +548,10 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
         b["mapa_png"] = folha.png()
         partes = []
         if satelite:
-            partes.append(f"Situação ATUAL: satélite GOES-19 IR de {satelite[2]:%d/%m %H:%M}Z")
-        partes.append(f"Etiquetas: categoria de voo FAA pelo METAR. Corredor da rota: {corredor_nm} NM.")
+            tipo = "visível (cores reais)" if satelite[0].startswith("data:") and len(satelite) > 3 \
+                and not satelite[3].get("temp_url") else "IR"
+            partes.append(f"Situação ATUAL: satélite GOES-19 {tipo} de {satelite[2]:%d/%m %H:%M}Z")
+        partes.append(f"Etiquetas: categoria de voo FAA pelo METAR. Corredor da rota: {corredor_nm} NM")
         if folha.avisos:
             partes.append("Mapa de fundo indisponível no momento.")
         b["mapa_legenda"] = ". ".join(partes)
@@ -566,7 +568,7 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
 
 
 ITENS_PDF = {   # chave: (texto da caixa de seleção, marcada por padrão?)
-    "mapa": ("🗺️ Mapa da rota (satélite IR, SIGMET, raios, aeródromos)", True),
+    "mapa": ("🗺️ Mapa da rota (satélite, SIGMET, raios, aeródromos)", True),
     "aerodromos": ("📋 METAR / TAF de origem, destino e alternativa", True),
     "em_rota": ("🛬 METAR / TAF dos aeródromos no meio da rota", True),
     "sigmet": ("⚡ SIGMET que afetam a rota (decodificados)", True),
@@ -591,6 +593,9 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
         for i, (k, (texto, padrao)) in enumerate(ITENS_PDF.items()):
             if (c1 if i % 2 == 0 else c2).checkbox(texto, value=padrao, key=f"pdf_{k}"):
                 marcados.add(k)
+        canal_sat = st.radio("Satélite no mapa do PDF", ["IR", "VIS"], horizontal=True,
+                             format_func=lambda c: "Infravermelho (topo das nuvens)" if c == "IR"
+                             else "Visível em cores reais (só de dia)")
         corredor = st.radio("Largura do corredor da rota (para cada lado)", CORREDORES, index=1, horizontal=True,
                             format_func=lambda n: f"{n} NM")
         gerar = st.form_submit_button("✈️ Gerar voo (PDF)", type="primary")
@@ -608,7 +613,7 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
             if "mapa" in marcados:
                 st.write("Satélite GOES-19")
                 try:
-                    satelite = fontes["goes"]("IR")
+                    satelite = fontes["goes"](canal_sat)
                 except Exception:
                     satelite = None
             gfs_val = None

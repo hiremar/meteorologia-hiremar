@@ -1,15 +1,20 @@
-"""GOES-19: do arquivo NetCDF da NOAA até uma imagem PNG pronta para o mapa.
+"""GOES-19: do arquivo NetCDF da NOAA até uma imagem pronta para o mapa.
 
-É o mesmo processo que já funcionava no seu app, agora servindo dois canais:
-  - IR  (canal 13, 10,3 µm): temperatura do topo das nuvens -> cores
-  - VIS (canal 2, 0,64 µm): reflectância (luz do Sol refletida) -> tons de cinza
+Dois produtos:
+  - IR  (canal 13, 10,3 µm): temperatura do topo das nuvens -> cores, com um
+        sombreamento de "relevo" (o topo das nuvens frias vira montanha) que dá o ar 3D.
+        Também sai uma grade de temperatura para o site mostrar °C e K ao passar o mouse.
+  - VIS (visível em CORES REAIS): canais 1 (azul, 0,47 µm), 2 (vermelho, 0,64 µm) e
+        3 (infravermelho próximo, 0,86 µm, usado para fabricar o verde, que o GOES não tem).
+        É a receita "true color" da NOAA/CIMSS. À noite a imagem fica transparente.
 
-O canal 2 "puro" tem 0,5 km de resolução e o arquivo é enorme. Por isso o visível
-vem do produto MCMIPF, que traz os 16 canais já em 2 km (a mesma grade do canal 13).
-Assim a reprojeção é idêntica e o custo de download fica parecido com o do IR.
+Os dois vêm em 2 km. Antes de colocar na grade do mapa (~5 km) tiramos a média dos
+vizinhos (suavização): sem isso, sortear 1 pixel a cada 5 km deixa a imagem serrilhada.
+O visível vem do produto MCMIPF, que traz os 16 canais já na mesma grade de 2 km do IR.
 """
 import base64
 import io
+import math
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -20,26 +25,46 @@ from PIL import Image
 LAT_MIN, LAT_MAX = -58.0, 16.0
 LON_MIN, LON_MAX = -95.0, -25.0
 RES_GRAUS = 0.05          # 0.05° ≈ 5 km. Menor = mais nítido, porém mais pesado
+PASSO_TEMP = 2            # grade de temperatura do mouse: 1 a cada 2 pixels (~10 km)
+K_BASE = 170              # temperatura (K) guardada como (K - 170) em 1 byte: 170 a 424 K
 
-# Qual arquivo e qual variável usar para cada canal
+# Qual arquivo e quais variáveis usar para cada canal
 CANAIS = {
-    "IR":  {"produto": "ABI-L2-CMIPF",  "filtro": "M6C13", "variavel": "CMI"},
-    "VIS": {"produto": "ABI-L2-MCMIPF", "filtro": "MCMIPF-M6", "variavel": "CMI_C02"},
+    "IR":  {"produto": "ABI-L2-CMIPF",  "filtro": "M6C13", "variaveis": ["CMI"]},
+    "VIS": {"produto": "ABI-L2-MCMIPF", "filtro": "MCMIPF-M6", "variaveis": ["CMI_C01", "CMI_C02", "CMI_C03"]},
 }
+
+# Escala do IR: (°C, R, G, B, A). Quanto mais frio, mais alto o topo da nuvem.
+ESCALA_IR = [
+    [10, 255, 255, 255, 0],
+    [-5, 235, 235, 235, 90],
+    [-20, 200, 210, 230, 170],
+    [-30, 90, 150, 255, 220],
+    [-40, 0, 220, 220, 235],
+    [-50, 60, 220, 60, 245],
+    [-58, 255, 240, 0, 250],
+    [-65, 255, 130, 0, 255],
+    [-72, 220, 0, 0, 255],
+    [-80, 255, 0, 200, 255],
+]
+
+
+def eixos():
+    """Longitudes (oeste -> leste) e latitudes (norte -> sul) dos pixels do mapa.
+    As linhas são espaçadas em Mercator, que é como o Leaflet desenha o mapa."""
+    lons = np.arange(LON_MIN, LON_MAX, RES_GRAUS)
+    merc = lambda lat: np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+    n_lin = int(round((LAT_MAX - LAT_MIN) / RES_GRAUS * 1.15))
+    ys = np.linspace(merc(LAT_MAX), merc(LAT_MIN), n_lin)
+    lats = np.degrees(2 * np.arctan(np.exp(ys)) - np.pi / 2)
+    return lons, lats
 
 
 def reprojetar_geos_para_latlon(x, y, lon0_deg, H, r_eq, r_pol):
     """O satélite enxerga o planeta 'de longe' (projeção geoestacionária).
     O mapa espera lat/lon. Para CADA pixel do mapa final, calculamos
     de qual pixel do satélite ele vem (fórmulas do manual GOES-R PUG)."""
-    lons = np.arange(LON_MIN, LON_MAX, RES_GRAUS)
-
-    # Linhas espaçadas em Mercator, que é como o Leaflet desenha o mapa.
-    merc = lambda lat: np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
-    n_lin = int(round((LAT_MAX - LAT_MIN) / RES_GRAUS * 1.15))
-    ys = np.linspace(merc(LAT_MAX), merc(LAT_MIN), n_lin)
-    lats = np.degrees(2 * np.arctan(np.exp(ys)) - np.pi / 2)
-
+    lons, lats = eixos()
     lon_g, lat_g = np.meshgrid(np.radians(lons), np.radians(lats))
     lon0 = np.radians(lon0_deg)
     e2 = 1 - (r_pol / r_eq) ** 2
@@ -60,21 +85,50 @@ def reprojetar_geos_para_latlon(x, y, lon0_deg, H, r_eq, r_pol):
     return lin, col, ok
 
 
+# ---------------------------------------------------------------------------
+# Suavização e ângulo do Sol
+# ---------------------------------------------------------------------------
+def suavizar(a, raio=1):
+    """Média dos vizinhos (janela de (2·raio+1)² pixels), ignorando os sem dado (NaN).
+    Feita em duas passadas (linhas, depois colunas): gasta bem menos memória."""
+    a = np.asarray(a, dtype="float32")
+    valido = np.isfinite(a)
+    soma = np.where(valido, a, 0).astype("float32")
+    peso = valido.astype("float32")
+    for eixo in (0, 1):
+        s2, p2 = soma.copy(), peso.copy()
+        for d in range(1, raio + 1):
+            for desloc in (d, -d):
+                s2 += np.roll(soma, desloc, axis=eixo)
+                p2 += np.roll(peso, desloc, axis=eixo)
+        soma, peso = s2, p2
+    with np.errstate(invalid="ignore", divide="ignore"):
+        saida = soma / peso
+    saida[~valido] = np.nan
+    return saida
+
+
+def cos_zenite_solar(instante, lats, lons):
+    """Cosseno do ângulo zenital do Sol em cada pixel (1 = Sol a pino, 0 = horizonte,
+    negativo = noite). Fórmulas astronômicas simples (precisão de ~0,5°, suficiente aqui)."""
+    dia = instante.timetuple().tm_yday
+    g = 2 * math.pi / 365 * (dia - 1 + (instante.hour - 12) / 24)
+    decl = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g)
+            + 0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    eq_tempo = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g)
+                         - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g))   # minutos
+    minutos = instante.hour * 60 + instante.minute + instante.second / 60
+    ang_horario = np.radians((minutos + eq_tempo + 4 * lons[None, :]) / 4 - 180)      # graus -> rad
+    lat = np.radians(lats)[:, None]
+    return np.sin(lat) * math.sin(decl) + np.cos(lat) * math.cos(decl) * np.cos(ang_horario)
+
+
+# ---------------------------------------------------------------------------
+# Cores
+# ---------------------------------------------------------------------------
 def colorir_ir(tc):
     """Temperatura de brilho (°C) -> cor RGBA. Quanto mais frio, mais alto o topo."""
-    #        °C    R    G    B    A
-    pts = np.array([
-        [ 10, 255, 255, 255,   0],
-        [ -5, 235, 235, 235,  90],
-        [-20, 200, 210, 230, 170],
-        [-30,  90, 150, 255, 220],
-        [-40,   0, 220, 220, 235],
-        [-50,  60, 220,  60, 245],
-        [-58, 255, 240,   0, 250],
-        [-65, 255, 130,   0, 255],
-        [-72, 220,   0,   0, 255],
-        [-80, 255,   0, 200, 255],
-    ], dtype=float)
+    pts = np.array(ESCALA_IR, dtype=float)
     t = pts[:, 0][::-1]
     rgba = np.zeros(tc.shape + (4,), dtype=np.uint8)
     for i in range(4):
@@ -82,18 +136,60 @@ def colorir_ir(tc):
     return rgba
 
 
-def colorir_vis(refl):
-    """Reflectância (0 = escuro, 1 = muito brilhante) -> cinza RGBA.
-    - raiz quadrada (correção gama) realça nuvens finas e fica mais natural;
-    - superfícies escuras (mar, floresta) ficam quase transparentes, então o
-      mapa de fundo aparece e as nuvens se destacam.
-    À noite a reflectância é ~0: a imagem fica praticamente transparente."""
-    g = np.sqrt(np.clip(refl, 0, 1))
-    cinza = (g * 255).astype(np.uint8)
-    alfa = (np.clip((g - 0.22) / 0.38, 0, 1) * 240).astype(np.uint8)
-    return np.dstack([cinza, cinza, cinza, alfa])
+def sombrear_relevo(rgba, tc, intensidade=0.35):
+    """Dá o ar 3D: trata o topo das nuvens como um relevo (nuvem mais fria = mais alta)
+    e ilumina com um 'sol' vindo do noroeste, como num mapa topográfico sombreado.
+    Lado virado para a luz fica mais claro; o lado oposto, mais escuro."""
+    altura = np.clip(-np.nan_to_num(tc, nan=10.0), -10, 90)        # °C negativos viram "altura"
+    altura = suavizar(suavizar(altura, 2), 2)       # só a FORMA das nuvens, não o "chiado" de cada pixel
+    d_lin, d_col = np.gradient(altura)                             # variação por pixel
+    # normal da superfície (x = leste, y = norte; as linhas crescem para o SUL)
+    nx, ny, nz = -d_col * 0.6, d_lin * 0.6, np.ones_like(altura)
+    norma = np.sqrt(nx ** 2 + ny ** 2 + nz ** 2)
+    alt, az = math.radians(45), math.radians(315)                  # luz a 45°, vindo do noroeste
+    lx, ly, lz = math.cos(alt) * math.sin(az), math.cos(alt) * math.cos(az), math.sin(alt)
+    luz = (nx * lx + ny * ly + nz * lz) / norma                    # 1 = de frente para a luz
+    fator = np.clip(1 + intensidade * (luz - math.sin(alt)) / (1 - math.sin(alt)), 0.55, 1.35)
+    saida = rgba.copy()
+    for i in range(3):
+        saida[..., i] = np.clip(rgba[..., i] * fator, 0, 255).astype(np.uint8)
+    return saida
 
 
+def colorir_cor_real(c01, c02, c03, cos_sol):
+    """Visível em CORES REAIS (receita "true color" da NOAA/CIMSS):
+       vermelho = canal 2 ; azul = canal 1 ;
+       verde    = 0,45·vermelho + 0,10·canal 3 + 0,45·azul  (o GOES não tem canal verde);
+       depois correção de gama (1/2,2) e um pouco mais de contraste: nuvem bem branca.
+    O Sol baixo escurece a imagem; compensamos em parte. À noite (Sol abaixo do
+    horizonte) a imagem vai ficando transparente e o mapa de fundo aparece."""
+    sol = np.clip(cos_sol, 0.05, 1)
+    compensa = 1 / sol ** 0.35                       # clareia o fim de tarde sem estourar
+    r = np.clip(np.nan_to_num(c02) * compensa, 0, 1)
+    b = np.clip(np.nan_to_num(c01) * compensa, 0, 1)
+    nir = np.clip(np.nan_to_num(c03) * compensa, 0, 1)
+    g = np.clip(0.45 * r + 0.1 * nir + 0.45 * b, 0, 1)
+    rgb = np.stack([r, g, b], axis=-1) ** (1 / 2.2)                 # gama
+    contraste = 105                                   # o mesmo do exemplo da NOAA/Unidata
+    f = 259 * (contraste + 255) / (255 * (259 - contraste))
+    rgb = np.clip(f * (rgb - 0.5) + 0.5, 0, 1)
+    # dia -> opaco ; Sol entre 3° acima e 6° abaixo do horizonte -> vai sumindo ; noite -> transparente
+    alfa = np.clip((cos_sol + 0.10) / 0.15, 0, 1)
+    alfa[~np.isfinite(c02)] = 0
+    return np.dstack([(rgb * 255).astype(np.uint8), (alfa * 255).astype(np.uint8)])
+
+
+def legenda_ir_css():
+    """Gradiente CSS com as mesmas cores do IR (para a barra da legenda)."""
+    pts = [p for p in ESCALA_IR if p[0] <= -5]
+    t0, t1 = pts[0][0], pts[-1][0]
+    paradas = ", ".join(f"rgb({r},{g},{b}) {round((t0 - t) / (t0 - t1) * 100)}%" for t, r, g, b, _ in pts)
+    return f"linear-gradient(to right, {paradas})", t0, t1
+
+
+# ---------------------------------------------------------------------------
+# Arquivos
+# ---------------------------------------------------------------------------
 def achar_arquivo(fs, canal, horas_atras=3):
     """Arquivo mais recente do canal pedido (procura até 3 horas para trás)."""
     cfg = CANAIS[canal]
@@ -118,8 +214,9 @@ def instante_arquivo(nome):
     return datetime.strptime("".join(m.groups()), "%Y%j%H%M").replace(tzinfo=timezone.utc)
 
 
-def processar_dataset(ds, canal):
-    """Dataset aberto -> matriz RGBA já reprojetada."""
+def processar_dataset(ds, canal, instante=None):
+    """Dataset aberto -> (matriz RGBA reprojetada, extras).
+    extras["temp_k"] (só no IR) = grade de temperatura em Kelvin para o mouse."""
     p = ds["goes_imager_projection"].attrs
     r_eq, r_pol = float(p["semi_major_axis"]), float(p["semi_minor_axis"])
     H = float(p["perspective_point_height"]) + r_eq
@@ -130,29 +227,57 @@ def processar_dataset(ds, canal):
     lin, col, ok = reprojetar_geos_para_latlon(x, y, lon0, H, r_eq, r_pol)
     r0, r1 = lin[ok].min(), lin[ok].max() + 1
     c0, c1 = col[ok].min(), col[ok].max() + 1
-    pedaco = ds[CANAIS[canal]["variavel"]].isel(y=slice(r0, r1), x=slice(c0, c1)).values
 
-    campo = np.full(lin.shape, np.nan)
-    campo[ok] = pedaco[lin[ok] - r0, col[ok] - c0]
+    def campo(variavel):
+        """Lê só o pedaço da América do Sul, suaviza (2 km -> média) e coloca na grade do mapa."""
+        pedaco = suavizar(ds[variavel].isel(y=slice(r0, r1), x=slice(c0, c1)).values, 1)
+        saida = np.full(lin.shape, np.nan, dtype="float32")
+        saida[ok] = pedaco[lin[ok] - r0, col[ok] - c0]
+        return saida
 
+    extras = {}
     if canal == "IR":
-        rgba = colorir_ir(np.nan_to_num(campo - 273.15, nan=99.0))   # Kelvin -> °C
+        kelvin = campo("CMI")
+        tc = kelvin - 273.15
+        rgba = sombrear_relevo(colorir_ir(np.nan_to_num(tc, nan=99.0)), tc)
+        rgba[np.isnan(kelvin), 3] = 0                                  # sem dado = transparente
+        extras["temp_k"] = kelvin[::PASSO_TEMP, ::PASSO_TEMP]
     else:
-        rgba = colorir_vis(np.nan_to_num(campo, nan=0.0))
-    rgba[np.isnan(campo), 3] = 0                                     # sem dado = transparente
-    return rgba
+        lons, lats = eixos()
+        cos_sol = cos_zenite_solar(instante or datetime.now(timezone.utc), lats, lons)
+        rgba = colorir_cor_real(campo("CMI_C01"), campo("CMI_C02"), campo("CMI_C03"), cos_sol)
+    return rgba, extras
 
 
 def rgba_para_data_url(rgba):
-    """Matriz RGBA -> 'data:image/png;base64,...' (a imagem vai embutida na página)."""
+    """Matriz RGBA -> 'data:image/webp;base64,...' (a imagem vai embutida na página).
+    WebP fica várias vezes menor que PNG (o site carrega mais rápido); se a PIL não
+    tiver suporte a WebP, cai para PNG."""
+    img = Image.fromarray(rgba, "RGBA")
     buf = io.BytesIO()
-    Image.fromarray(rgba, "RGBA").save(buf, format="PNG", optimize=True)
+    try:
+        img.save(buf, format="WEBP", quality=85, method=4)
+        tipo = "webp"
+    except (OSError, KeyError, ValueError):
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        tipo = "png"
+    return f"data:image/{tipo};base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def temperatura_para_data_url(kelvin):
+    """Grade de temperatura -> PNG em tons de cinza: cada pixel guarda (K - 170).
+    255 = sem dado. O navegador lê esse PNG e mostra °C e K onde o mouse está."""
+    v = np.where(np.isfinite(kelvin), np.clip(np.round(kelvin - K_BASE), 0, 254), 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(v, "L").save(buf, format="PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def carregar_overlay(canal):
     """Faz tudo: acha o arquivo, lê só o pedaço necessário, reprojeta e colore.
-    Retorna (data_url, limites, instante_utc) ou levanta exceção com a explicação."""
+    Retorna (data_url, limites, instante_utc, extras) ou levanta exceção com a explicação.
+    extras["temp_url"] (só IR): grade de temperatura para o mouse."""
     import s3fs          # importados aqui para o site abrir mesmo se faltarem
     import xarray as xr
 
@@ -160,8 +285,12 @@ def carregar_overlay(canal):
     arquivo = achar_arquivo(fs, canal)
     if arquivo is None:
         raise RuntimeError("nenhum arquivo GOES-19 encontrado nas últimas 3 horas")
+    instante = instante_arquivo(arquivo)
     with fs.open(arquivo, "rb") as f:
         ds = xr.open_dataset(f, engine="h5netcdf")
-        rgba = processar_dataset(ds, canal)
+        rgba, extras = processar_dataset(ds, canal, instante)
     limites = [[LAT_MIN, LON_MIN], [LAT_MAX, LON_MAX]]
-    return rgba_para_data_url(rgba), limites, instante_arquivo(arquivo)
+    saida = {}
+    if "temp_k" in extras:
+        saida["temp_url"] = temperatura_para_data_url(extras["temp_k"])
+    return rgba_para_data_url(rgba), limites, instante, saida
