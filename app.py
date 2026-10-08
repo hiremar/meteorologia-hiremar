@@ -115,6 +115,17 @@ WACS = ["WAC_3140_BRASILIA", "WAC_3141_SALVADOR", "WAC_3189_BELO_HORIZONTE", "WA
         "WAC_3383_URUGUAIANA", "WAC_3384_PORTO_ALEGRE", "WAC_3434_RIO_DA_PRATA"]
 
 
+# Guia em PDF de como usar o planejamento de voo (fica na pasta "materiais" do repositório)
+GUIA_PLANEJAMENTO = Path(__file__).parent / "materiais" / "Guia_Planejamento_de_Voo.pdf"
+
+
+def botao_guia(onde, rotulo="📘 Como planejar (guia em PDF)"):
+    """Botão discreto para baixar o guia. 'onde' = a barra lateral, uma aba, a página..."""
+    if GUIA_PLANEJAMENTO.exists():
+        onde.download_button(rotulo, GUIA_PLANEJAMENTO.read_bytes(), GUIA_PLANEJAMENTO.name,
+                             "application/pdf", use_container_width=True)
+
+
 def nome_wac(w):
     """'WAC_3262_SAO_PAULO' -> 'WAC 3262 · Sao Paulo'  (texto mostrado no menu e no mapa)"""
     return "WAC " + w[4:8] + " · " + w[9:].replace("_", " ").title()
@@ -227,6 +238,7 @@ if aba.startswith("🛰️"):
     if st.session_state.get("plano") and aba_plano.button("Limpar planejamento"):
         del st.session_state["plano"]
         st.rerun()
+    botao_guia(aba_plano)
     plano = st.session_state.get("plano")
     nivel = st.session_state.get("nivel", 100)          # FL de cruzeiro (número: 100 = FL100)
     voo = st.session_state.get("voo") or pl.voo_padrao()
@@ -359,8 +371,8 @@ if aba.startswith("🛰️"):
             for t in nao_desenhados:
                 st.markdown(f"<div class='msg'>{html.escape(t)}</div>", unsafe_allow_html=True)
 
-    # ---------------- PLANEJAMENTO DE VOO (abas embaixo do mapa) ----------------
-    st.subheader("📍 Planejamento de voo")
+    # ---------------- BRIEFING DO VOO (abas embaixo do mapa; o plano é preenchido na barra lateral) ----------------
+    st.subheader("🧭 Briefing do voo")
     abas = st.tabs(["🔍 Dados da rota", "🕓 Consultar mensagens", "🗺️ SIGWX", "🌬️ Vento na rota",
                     "📄 Gerar voo (PDF)"])
     with abas[0]:
@@ -440,6 +452,10 @@ elif aba.startswith("👤"):
 else:
     st.title("📚 Biblioteca digital")
     aviso_instrucao()
+    st.markdown("### 📘 Guias do site")
+    st.markdown("Passo a passo de como montar o briefing meteorológico do seu voo no site: "
+                "plano, mapa, abas do Briefing do voo, PDF, validades (Doc 8896) e checklist.")
+    botao_guia(st, "📘 Guia do Planejamento de Voo (PDF)")
     st.markdown("""
 ### 📖 Manuais oficiais
 - [ICA 105-15/2025 (Manual de Estação Meteorológica de Superfície)](https://publicacoes.decea.mil.br/publicacao/ica-105-15)

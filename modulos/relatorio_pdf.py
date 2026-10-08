@@ -67,7 +67,9 @@ def _secao(texto):
     t.setStyle(TableStyle([("BACKGROUND", (0, 0), (0, 0), AMARELO), ("BACKGROUND", (1, 0), (1, 0), AZUL2),
                            ("LEFTPADDING", (1, 0), (1, 0), 8), ("TOPPADDING", (0, 0), (-1, -1), 5),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
-    return [Spacer(1, 4 * mm), t, Spacer(1, 2.5 * mm)]
+    esp = Spacer(1, 2.5 * mm)
+    t.keepWithNext = esp.keepWithNext = True      # o título nunca fica sozinho no pé da página
+    return [Spacer(1, 4 * mm), t, esp]
 
 
 def _caixa_msg(texto, fundo=VERDE_MSG, borda=colors.HexColor("#2e9e44")):
