@@ -33,11 +33,15 @@ from . import rota as rt
 NIVEIS_CRUZEIRO = list(range(30, 460, 10))
 CORREDORES = [25, 50, 100]          # NM para cada lado da rota
 URL_SIGWX = "https://estatico-redemet.decea.mil.br/sigwx/{t:%Y/%m/%d}/{nome}{t:%H}.gif"
-# O nome do arquivo NÃO é a validade. Observado em 08/10/2026: o arquivo
-# .../sigwx/2026/10/08/siginf06.gif é a carta "VALID 12 UTC 09-OCT-2026", ou seja,
-# pasta + hora do nome = validade - 30 h. Tentamos esse padrão primeiro e, por garantia,
-# o nome igual à validade. Se a REDEMET mudar o padrão, é só ajustar esta lista.
-DESLOCAMENTOS_SIGWX_H = [30, 0]
+# O nome do arquivo NÃO diz a validade com segurança. Em 08/10/2026 vimos:
+#   2026/10/08/siginf06.gif -> "VALID 12 UTC 09-OCT-2026"  (30 h depois do nome)
+#   2026/10/07/siginf18.gif -> "VALID 18 UTC 08-OCT-2026"  (24 h depois do nome)
+# Por isso o site LÊ a validade impressa no quadro da carta (reconhecimento de texto,
+# programa Tesseract) e só usa a carta cuja validade bate com a do voo.
+# Ordem em que procuramos os arquivos (horas ANTES da validade): os mais prováveis primeiro.
+DESLOCAMENTOS_SIGWX_H = [24, 30, 18, 36, 12, 42, 6, 48, 0]
+MESES_EN = {m: i for i, m in enumerate(
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1)}
 # Cartas SIGWX da REDEMET por validade. 'siginf' = SFC/FL250 (CIMAER).
 # Quando soubermos o nome do arquivo da carta ALTA (FL250-630), é só acrescentar aqui,
 # ex.: ("sigsup", "FL250-FL630").
@@ -116,36 +120,84 @@ def gfs_do_voo(voo):
     return dados, infos, erros
 
 
+def validade_impressa(png):
+    """Lê o quadro "VALID: 18 UTC 08 - OCT - 2026" da carta (canto inferior direito).
+    Usa o Tesseract (programa de reconhecimento de texto, instalado pelo packages.txt).
+    Devolve datetime em UTC, ou None se não conseguir ler."""
+    import shutil
+    import subprocess
+    import tempfile
+    from PIL import Image
+    if not shutil.which("tesseract"):
+        return None
+    im = Image.open(io.BytesIO(png)).convert("L")
+    w, h = im.size
+    canto = im.crop((int(w * .55), int(h * .5), w, h))
+    canto = canto.resize((canto.width * 2, canto.height * 2))     # ampliar ajuda a leitura
+    with tempfile.NamedTemporaryFile(suffix=".png") as f:
+        canto.save(f.name)
+        texto = subprocess.run(["tesseract", f.name, "-", "--psm", "6"], capture_output=True,
+                               text=True, timeout=30).stdout.upper()
+    m = re.search(r"VALID\W*(\d{2})\s*UTC\W*(\d{1,2})\W*([A-Z0]{3})\W*(\d{4})", texto)
+    if not m:
+        return None
+    hora, dia, mes, ano = m.groups()
+    mes = MESES_EN.get(mes.replace("0", "O"))
+    try:
+        return datetime(int(ano), mes, int(dia), int(hora), tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False, max_entries=200)
+def _validade_do_arquivo(url):
+    """(png, validade lida na carta) de um arquivo da REDEMET. Exceção se o arquivo não existir."""
+    png = _imagem_png(url)
+    return png, validade_impressa(png)
+
+
 def sigwx_do_voo(voo, api_key):
-    """Cartas SIGWX que cobrem o voo (validade ±3 h). Devolve lista de dicts
-    {validade, titulo, url, png (ou None), nota}. Se a carta da validade não existir na
-    REDEMET, cai para a mais recente da API e avisa."""
+    """Cartas SIGWX que cobrem o voo (validade ±3 h, Doc 8896). Devolve lista de dicts
+    {validade, titulo, url, png (ou None), nota}.
+
+    Para cada validade necessária, abrimos os arquivos candidatos da REDEMET e LEMOS a
+    validade impressa; só fica a carta que bate. Sem o leitor de texto, usamos o padrão
+    mais comum (24 h) e avisamos para conferir."""
     etd, eta, _ = horarios(voo)
     cartas = []
     for v in rt.validades_do_voo(etd, eta, 6):
         for nome, faixa in CARTAS_SIGWX:
             uso = f"usar de {v - timedelta(hours=3):%d/%m %H}Z a {v + timedelta(hours=3):%d/%m %H}Z"
             carta = {"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": None, "png": None,
-                     "nota": f"carta desta validade não encontrada na REDEMET ({uso})."}
+                     "nota": f"carta desta validade ainda não está na REDEMET ({uso})."}
+            sem_leitura = None
             for horas in DESLOCAMENTOS_SIGWX_H:
                 url = URL_SIGWX.format(t=v - timedelta(hours=horas), nome=nome)
                 try:
-                    carta.update(url=url, png=_imagem_png(url),
-                                 nota=f"Doc 8896: {uso}. Arquivo: {url.rsplit('/sigwx/', 1)[-1]}. "
-                                      "Confira a validade impressa na carta.")
-                    break
+                    png, lida = _validade_do_arquivo(url)
                 except Exception:
-                    continue
+                    continue                          # arquivo não existe: tenta o próximo
+                if lida == v:
+                    carta.update(url=url, png=png, nota=f"Doc 8896: {uso}. Validade conferida na carta "
+                                                        f"(arquivo {url.rsplit('/sigwx/', 1)[-1]}).")
+                    break
+                if lida is None and sem_leitura is None and horas == 24:
+                    sem_leitura = (url, png)           # leitor indisponível: guarda o palpite mais provável
+            if not carta["png"] and sem_leitura:
+                url, png = sem_leitura
+                carta.update(url=url, png=png, nota=f"Doc 8896: {uso}. ATENÇÃO: não foi possível ler a validade "
+                                                    "na carta; confira o quadro VALID antes de usar.")
             cartas.append(carta)
-    if not any(c["png"] for c in cartas):          # nenhuma por validade: usa a mais recente da API
+    if not any(c["png"] for c in cartas):          # nenhuma por validade: mostra a mais recente da API
         url, erro = _sigwx_url(api_key)
         if url:
             try:
-                cartas.append({"validade": None, "titulo": "SIGWX SFC/FL250 mais recente (API REDEMET)",
-                               "url": url, "png": _imagem_png(url),
-                               "nota": "Não achamos as cartas das validades do voo; esta é a mais recente "
-                                       "disponível e pode NÃO valer para o horário do voo. Confira a validade "
-                                       "impressa na carta."})
+                png, lida = _validade_do_arquivo(url)
+                quando = f" (válida {lida:%d/%m %H}Z)" if lida else ""
+                cartas.append({"validade": None, "titulo": f"SIGWX SFC/FL250 mais recente{quando}",
+                               "url": url, "png": png,
+                               "nota": "A carta da validade do voo ainda não saiu; esta é a mais recente e NÃO "
+                                       "vale para o horário do voo. Use só como referência."})
             except Exception:
                 pass
     return cartas
@@ -539,8 +591,8 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
         for i, (k, (texto, padrao)) in enumerate(ITENS_PDF.items()):
             if (c1 if i % 2 == 0 else c2).checkbox(texto, value=padrao, key=f"pdf_{k}"):
                 marcados.add(k)
-        corredor = st.select_slider("Largura do corredor da rota (para cada lado)", CORREDORES, value=50,
-                                    format_func=lambda n: f"{n} NM")
+        corredor = st.radio("Largura do corredor da rota (para cada lado)", CORREDORES, index=1, horizontal=True,
+                            format_func=lambda n: f"{n} NM")
         gerar = st.form_submit_button("✈️ Gerar voo (PDF)", type="primary")
 
     if gerar:

@@ -1,3 +1,4 @@
 libeccodes-dev
 build-essential
 libhdf5-dev
+tesseract-ocr
