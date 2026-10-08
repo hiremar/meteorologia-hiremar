@@ -4,7 +4,8 @@ Este arquivo só monta a TELA. O trabalho pesado está na pasta "modulos":
 cada assunto num arquivo (satélite, REDEMET, modelo GFS, desenho do mapa...).
 """
 import html
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import folium
@@ -16,6 +17,7 @@ from modulos import aerodromos as ad
 from modulos import camadas_mapa as cm
 from modulos import metar as mt
 from modulos import modelo_gfs as gfs
+from modulos import planejamento as pl
 from modulos import redemet as rd
 from modulos import satelite as sat
 
@@ -188,6 +190,8 @@ if aba.startswith("🛰️"):
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
     # A aba do planejamento já vem ABERTA quando há um plano ativo (expanded=...).
+    if not isinstance(st.session_state.get("nivel", 100), int):   # sessão aberta na versão antiga do site
+        st.session_state["nivel"] = 100
     aba_plano = st.sidebar.expander("📍 Planejamento de voo", expanded=bool(st.session_state.get("plano")))
     with aba_plano.form("planejamento"):
         opcoes = ad.LISTA_ICAO
@@ -195,20 +199,43 @@ if aba.startswith("🛰️"):
         destino = st.selectbox("Destino", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
         altn = st.selectbox("Alternativa (opcional)", opcoes, index=None, placeholder="Escolha...",
                             format_func=ad.rotulo)
+        nivel_escolhido = st.selectbox("Nível de cruzeiro", pl.NIVEIS_CRUZEIRO, format_func=pl.fl_txt,
+                                       index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", 100)))
+        # Horário do voo (UTC). Padrão: decolagem daqui a ~30 min e 1 h de voo.
+        voo_atual = st.session_state.get("voo") or pl.voo_padrao()
+        c1, c2 = st.columns(2)
+        data_etd = c1.date_input("Decolagem (UTC)", voo_atual["etd"].date(), format="DD/MM/YYYY")
+        hora_etd = c2.time_input("Hora (UTC)", voo_atual["etd"].time(), step=300)
+        eet_txt = st.text_input("Tempo de voo (EET, hh:mm)", f"{voo_atual['eet_min'] // 60:02d}:"
+                                f"{voo_atual['eet_min'] % 60:02d}", help="Ex.: 01:15 = 1 h e 15 min.")
         planejar = st.form_submit_button("✈️ Planejar voo", type="primary")
     if planejar:
-        if origem and destino:
-            st.session_state["plano"] = [origem, destino, altn]
-        else:
+        etd = datetime.combine(data_etd, hora_etd, tzinfo=timezone.utc)
+        m_eet = re.fullmatch(r"\s*(\d{1,2})[:h]?(\d{2})\s*", eet_txt or "")
+        agora_z = datetime.now(timezone.utc)
+        if not (origem and destino):
             aba_plano.warning("Escolha pelo menos origem e destino.")
+        elif not m_eet or not (5 <= int(m_eet.group(1)) * 60 + int(m_eet.group(2)) <= 18 * 60):
+            aba_plano.warning("Tempo de voo inválido: use hh:mm (ex.: 01:15), entre 00:05 e 18:00.")
+        elif not (agora_z - timedelta(hours=1) <= etd <= agora_z + timedelta(hours=24)):
+            aba_plano.warning("A decolagem deve ser entre 1 h atrás e 24 h à frente (UTC).")
+        else:
+            st.session_state["plano"] = [origem, destino, altn]
+            st.session_state["nivel"] = nivel_escolhido
+            st.session_state["voo"] = {"etd": etd, "eet_min": int(m_eet.group(1)) * 60 + int(m_eet.group(2))}
+            st.session_state.pop("pdf_voo", None)       # PDF de um plano anterior não vale mais
     if st.session_state.get("plano") and aba_plano.button("Limpar planejamento"):
         del st.session_state["plano"]
         st.rerun()
     plano = st.session_state.get("plano")
+    nivel = st.session_state.get("nivel", 100)          # FL de cruzeiro (número: 100 = FL100)
+    voo = st.session_state.get("voo") or pl.voo_padrao()
 
     # ---------------- título ----------------
     if plano:
-        st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else ""))
+        st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else "")
+                 + f" · {pl.fl_txt(nivel)}")
+        st.caption(pl.txt_horarios(voo))
     else:
         st.title("🛰️ Briefing operacional")
     aviso_instrucao()
@@ -332,36 +359,48 @@ if aba.startswith("🛰️"):
             for t in nao_desenhados:
                 st.markdown(f"<div class='msg'>{html.escape(t)}</div>", unsafe_allow_html=True)
 
-    # ---------------- METAR / TAF da rota ----------------
-    if plano:
-        st.subheader("🔍 Dados meteorológicos da rota")
-        papeis = ["Origem", "Destino", "Alternativa"]
-        cols = st.columns(3)
-        for col, papel, icao in zip(cols, papeis, plano):
-            if not icao:
-                continue
-            metar = (metars.get(icao) or {}).get("mens", "")
-            taf = (tafs.get(icao) or {}).get("mens", "")
-            info = mt.analisar(metar) if metar else None
-            cat = info["faa"] if info else "ND"
-            texto, fundo, cor = mt.CATEGORIAS_FAA[cat]
-            idade = f" · há {info['idade_min']} min" if info and info["idade_min"] is not None else ""
-            with col:
-                st.markdown(
-                    f"<div class='cartao-titulo'>{papel}: {icao}"
-                    f"<span class='cat-chip' style='background:{fundo};color:{cor}'>{texto}</span></div>"
-                    f"<div class='rotulo'>{html.escape(ad.NOMES.get(icao, ''))}{idade}</div>"
-                    + "".join(f"<div class='rotulo' style='color:#ffd666'>⚠ AVISO DE AERÓDROMO</div>"
-                              f"<div class='msg' style='border-left-color:#ffbe00;color:#ffe9a8'>"
-                              f"{html.escape(' · '.join(rd.decodificar_aviso(a)))}</div>"
-                              for a in avisos_ad.get(icao, [])) +
-                    f"<div class='rotulo'>METAR</div><div class='msg'>{html.escape(metar or 'não disponível')}</div>"
-                    f"<div class='rotulo'>TAF</div><div class='msg taf'>"
-                    f"{html.escape(mt.formatar_taf(taf) if taf else 'não disponível')}</div>",
-                    unsafe_allow_html=True)
-    else:
-        st.info("Escolha origem, destino e alternativa na barra lateral e clique em **Planejar voo** "
-                "para ver a rota e os METAR/TAF completos aqui embaixo.", icon="🧭")
+    # ---------------- PLANEJAMENTO DE VOO (abas embaixo do mapa) ----------------
+    st.subheader("📍 Planejamento de voo")
+    abas = st.tabs(["🔍 Dados da rota", "🕓 Consultar mensagens", "🗺️ SIGWX", "🌬️ Vento na rota",
+                    "📄 Gerar voo (PDF)"])
+    with abas[0]:
+        if plano:
+            papeis = ["Origem", "Destino", "Alternativa"]
+            cols = st.columns(3)
+            for col, papel, icao in zip(cols, papeis, plano):
+                if not icao:
+                    continue
+                metar = (metars.get(icao) or {}).get("mens", "")
+                taf = (tafs.get(icao) or {}).get("mens", "")
+                info = mt.analisar(metar) if metar else None
+                cat = info["faa"] if info else "ND"
+                texto, fundo, cor = mt.CATEGORIAS_FAA[cat]
+                idade = f" · há {info['idade_min']} min" if info and info["idade_min"] is not None else ""
+                with col:
+                    st.markdown(
+                        f"<div class='cartao-titulo'>{papel}: {icao}"
+                        f"<span class='cat-chip' style='background:{fundo};color:{cor}'>{texto}</span></div>"
+                        f"<div class='rotulo'>{html.escape(ad.NOMES.get(icao, ''))}{idade}</div>"
+                        + "".join(f"<div class='rotulo' style='color:#ffd666'>⚠ AVISO DE AERÓDROMO</div>"
+                                  f"<div class='msg' style='border-left-color:#ffbe00;color:#ffe9a8'>"
+                                  f"{html.escape(' · '.join(rd.decodificar_aviso(a)))}</div>"
+                                  for a in avisos_ad.get(icao, [])) +
+                        f"<div class='rotulo'>METAR</div><div class='msg'>{html.escape(metar or 'não disponível')}</div>"
+                        f"<div class='rotulo'>TAF</div><div class='msg taf'>"
+                        f"{html.escape(mt.formatar_taf(taf) if taf else 'não disponível')}</div>",
+                        unsafe_allow_html=True)
+        else:
+            st.info("Escolha origem, destino, alternativa e nível na barra lateral e clique em **Planejar voo** "
+                    "para ver a rota e os METAR/TAF completos aqui.", icon="🧭")
+    with abas[1]:
+        pl.aba_consulta(api_key, plano)
+    with abas[2]:
+        pl.aba_sigwx(api_key, plano, voo)
+    with abas[3]:
+        pl.aba_vento(plano, nivel, voo)
+    with abas[4]:
+        pl.aba_gerar_voo(plano, nivel, voo, api_key, {"goes": goes, "metars_e_tafs": metars_e_tafs,
+                                                      "sigmets": lista_sigmets, "raios": raios})
 
 # ============================================================================
 # ABA 2 — AULAS E SIMULADORES

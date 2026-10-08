@@ -91,6 +91,63 @@ def ultima_por_localidade(tipo, icaos, api_key):
     return ultimas, None
 
 
+def mensagens_periodo(tipo, icaos, inicio, fim, api_key, max_paginas=40):
+    """Consulta de mensagens PASSADAS, igual à tela "Consulta Mensagens" da REDEMET.
+
+    tipo   : "metar" (traz METAR e SPECI) ou "taf"
+    icaos  : lista de localidades, ex.: ["SBGR", "SBSP"]
+    inicio, fim : datetime em UTC. A API só aceita hora cheia (AAAAMMDDHH), então
+             pedimos as horas que cobrem o período e cortamos os minutos aqui no código.
+    Retorna (lista de dicts {localidade, tipo, validade, recebimento, mens}, erro).
+
+    Atenção: quando a EMS manda um COR, a REDEMET guarda só a mensagem corrigida."""
+    extras = {"data_ini": inicio.strftime("%Y%m%d%H"), "data_fim": fim.strftime("%Y%m%d%H")}
+    try:
+        itens = _pedir_paginas(f"{tipo}/{','.join(icaos)}", api_key, extras, max_paginas)
+    except Exception as e:
+        return [], f"{tipo.upper()} indisponível às {_agora_z()} ({_motivo(e)})"
+
+    saida, vistos = [], set()
+    for i in itens:
+        texto = " ".join((i.get("mens") or "").split())
+        validade = i.get("validade_inicial") or ""
+        try:
+            instante = datetime.strptime(validade[:16], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        except ValueError:
+            instante = None
+        # corta o que ficou fora dos minutos pedidos (a API trabalha com hora cheia)
+        if instante and not (inicio <= instante <= fim):
+            continue
+        if not texto or texto in vistos:           # a mesma mensagem pode vir repetida entre páginas
+            continue
+        vistos.add(texto)
+        primeira = texto.split()[0]
+        saida.append({"localidade": (i.get("id_localidade") or "").upper(),
+                      "tipo": primeira if primeira in ("METAR", "SPECI", "TAF") else tipo.upper(),
+                      "validade": instante, "recebimento": i.get("recebimento") or "",
+                      "mens": texto})
+    saida.sort(key=lambda d: (d["localidade"], d["validade"] or datetime.min.replace(tzinfo=timezone.utc)))
+    return saida, None
+
+
+def sigwx(api_key):
+    """Endereço da carta SIGWX mais recente (SFC/FL250) da REDEMET.
+    A API devolve só o link da imagem (não aceita pedir cartas antigas).
+    Retorna (url, erro)."""
+    try:
+        r = requests.get("https://api-redemet.decea.mil.br/produtos/sigwx",
+                         params={"api_key": api_key}, timeout=TIMEOUT)
+        r.raise_for_status()
+        # Às vezes vem só o texto do link; às vezes um JSON com o link dentro.
+        # Procuramos o primeiro endereço de imagem no texto da resposta, seja qual for o formato.
+        m = re.search(r"https?://[^\s\"'\\]+\.(?:png|gif|jpg|jpeg)", r.text.replace("\\/", "/"), re.I)
+        if not m:
+            raise RecusaAPI("resposta sem link de imagem")
+        return m.group(0), None
+    except Exception as e:
+        return None, f"Carta SIGWX indisponível às {_agora_z()} ({_motivo(e)})"
+
+
 def sigmets(api_key):
     """SIGMETs vigentes. Retorna (lista de textos, erro)."""
     try:
