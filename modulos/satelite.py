@@ -136,12 +136,12 @@ def colorir_ir(tc):
     return rgba
 
 
-def sombrear_relevo(rgba, tc, intensidade=0.35):
+def sombrear_relevo(rgba, tc, intensidade=0.22):
     """Dá o ar 3D: trata o topo das nuvens como um relevo (nuvem mais fria = mais alta)
     e ilumina com um 'sol' vindo do noroeste, como num mapa topográfico sombreado.
     Lado virado para a luz fica mais claro; o lado oposto, mais escuro."""
     altura = np.clip(-np.nan_to_num(tc, nan=10.0), -10, 90)        # °C negativos viram "altura"
-    altura = suavizar(suavizar(altura, 2), 2)       # só a FORMA das nuvens, não o "chiado" de cada pixel
+    altura = suavizar(altura, 1)                   # tira só o "chiado" de cada pixel; mantém a textura
     d_lin, d_col = np.gradient(altura)                             # variação por pixel
     # normal da superfície (x = leste, y = norte; as linhas crescem para o SUL)
     nx, ny, nz = -d_col * 0.6, d_lin * 0.6, np.ones_like(altura)
@@ -198,7 +198,9 @@ def achar_arquivo(fs, canal, horas_atras=3):
         t = agora - timedelta(hours=delta)
         pasta = f"noaa-goes19/{cfg['produto']}/{t:%Y}/{t:%j}/{t:%H}/"
         try:
-            achados = [f for f in fs.ls(pasta) if cfg["filtro"] in f and f.endswith(".nc")]
+            # refresh=True: lista a pasta DE NOVO na NOAA. Sem isso, o s3fs reaproveita uma lista
+            # antiga guardada na memória e o site fica preso numa imagem de 40-60 min atrás.
+            achados = [f for f in fs.ls(pasta, refresh=True) if cfg["filtro"] in f and f.endswith(".nc")]
         except FileNotFoundError:
             achados = []
         if achados:
@@ -228,16 +230,20 @@ def processar_dataset(ds, canal, instante=None):
     r0, r1 = lin[ok].min(), lin[ok].max() + 1
     c0, c1 = col[ok].min(), col[ok].max() + 1
 
-    def campo(variavel):
-        """Lê só o pedaço da América do Sul, suaviza (2 km -> média) e coloca na grade do mapa."""
-        pedaco = suavizar(ds[variavel].isel(y=slice(r0, r1), x=slice(c0, c1)).values, 1)
+    def campo(variavel, suave):
+        """Lê só o pedaço da América do Sul e coloca na grade do mapa.
+        suave=True: média dos vizinhos antes (tira o serrilhado do visível).
+        No IR fica False: lá a suavização deixava as nuvens com cara de "borrado"."""
+        pedaco = ds[variavel].isel(y=slice(r0, r1), x=slice(c0, c1)).values
+        if suave:
+            pedaco = suavizar(pedaco, 1)
         saida = np.full(lin.shape, np.nan, dtype="float32")
         saida[ok] = pedaco[lin[ok] - r0, col[ok] - c0]
         return saida
 
     extras = {}
     if canal == "IR":
-        kelvin = campo("CMI")
+        kelvin = campo("CMI", suave=False)
         tc = kelvin - 273.15
         rgba = sombrear_relevo(colorir_ir(np.nan_to_num(tc, nan=99.0)), tc)
         rgba[np.isnan(kelvin), 3] = 0                                  # sem dado = transparente
@@ -245,7 +251,7 @@ def processar_dataset(ds, canal, instante=None):
     else:
         lons, lats = eixos()
         cos_sol = cos_zenite_solar(instante or datetime.now(timezone.utc), lats, lons)
-        rgba = colorir_cor_real(campo("CMI_C01"), campo("CMI_C02"), campo("CMI_C03"), cos_sol)
+        rgba = colorir_cor_real(campo("CMI_C01", True), campo("CMI_C02", True), campo("CMI_C03", True), cos_sol)
     return rgba, extras
 
 
@@ -281,7 +287,8 @@ def carregar_overlay(canal):
     import s3fs          # importados aqui para o site abrir mesmo se faltarem
     import xarray as xr
 
-    fs = s3fs.S3FileSystem(anon=True)
+    # skip_instance_cache / use_listings_cache=False: nada de reaproveitar listas de arquivos antigas
+    fs = s3fs.S3FileSystem(anon=True, skip_instance_cache=True, use_listings_cache=False)
     arquivo = achar_arquivo(fs, canal)
     if arquivo is None:
         raise RuntimeError("nenhum arquivo GOES-19 encontrado nas últimas 3 horas")
