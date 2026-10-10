@@ -176,6 +176,29 @@ def ler_rota(texto, fixos, aerovias, origem=None, destino=None):
             if i + 1 >= len(limpas):
                 return _falha(f"Depois da aerovia {t} falta o fixo onde você sai dela.")
             entrada, saida = pontos[-1]["ident"], limpas[i + 1]
+            na_via = {s["de"] for s in aerovias[t]} | {s["para"] for s in aerovias[t]}
+            # Tolerância de AIRAC: rota de base antiga (SimBrief, simulador) pode citar um fixo que
+            # hoje não está mais na aerovia. Entramos/saímos pelo fixo da aerovia mais próximo.
+            if entrada not in na_via:
+                perto, d = _mais_proximo(fixos[entrada], na_via, fixos)
+                if perto is None or d > MAX_DESVIO_NM:
+                    return _falha(f"{entrada} não está na aerovia {t} (base atual do DECEA) e não há "
+                                  f"fixo dela a menos de {MAX_DESVIO_NM} NM.")
+                avisos.append(f"{entrada} não está na {t} na base atual do DECEA: segui direto até "
+                              f"{perto} ({d:.0f} NM) para entrar na aerovia. Rota de AIRAC antigo?")
+                pontos.append(_ponto(perto, fixos, "DCT"))
+                entrada = perto
+            saida_original = None
+            if saida not in na_via:
+                if saida not in fixos:
+                    return _falha(f"Depois da aerovia {t}, não reconheci o fixo '{saida}'.")
+                perto, d = _mais_proximo(fixos[saida], na_via, fixos)
+                if perto is None or d > MAX_DESVIO_NM:
+                    return _falha(f"{saida} não está na aerovia {t} e não há fixo dela a menos de "
+                                  f"{MAX_DESVIO_NM} NM.")
+                avisos.append(f"{saida} não está na {t} na base atual do DECEA: saí da aerovia em "
+                              f"{perto} e segui direto ({d:.0f} NM). Rota de AIRAC antigo?")
+                saida_original, saida = saida, perto
             caminho, mao_unica = caminho_na_aerovia(aerovias[t], entrada, saida)
             if caminho is None:
                 return _falha(f"Não achei um caminho de {entrada} até {saida} pela aerovia {t}. "
@@ -183,6 +206,8 @@ def ler_rota(texto, fixos, aerovias, origem=None, destino=None):
             avisos += mao_unica
             for f in caminho[1:]:
                 pontos.append(_ponto(f, fixos, t))
+            if saida_original:                       # o fixo pedido, fora da aerovia: direto
+                pontos.append(_ponto(saida_original, fixos, "DCT"))
             i += 2                                   # já usamos a aerovia e o fixo de saída
         elif t in fixos:
             pontos.append(_ponto(t, fixos, "DCT"))
@@ -194,6 +219,16 @@ def ler_rota(texto, fixos, aerovias, origem=None, destino=None):
     if not pontos:
         return _falha("A rota ficou vazia: escreva pelo menos um fixo (ex.: UKBEV UZ26 SAMGA).")
     return {"ok": True, "pontos": pontos, "avisos": avisos, "erro": None}
+
+
+MAX_DESVIO_NM = 100      # até quanto aceitamos "puxar" um fixo de AIRAC antigo até a aerovia
+
+
+def _mais_proximo(posicao, candidatos, fixos):
+    """O fixo de 'candidatos' mais perto de 'posicao' [lat, lon]: (ident, distância NM)."""
+    from .rota import distancia_nm
+    melhor = min(((distancia_nm(posicao, fixos[c]), c) for c in candidatos if c in fixos), default=None)
+    return (melhor[1], melhor[0]) if melhor else (None, None)
 
 
 def _ponto(ident, fixos, via):
