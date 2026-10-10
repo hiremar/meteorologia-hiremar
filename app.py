@@ -227,7 +227,10 @@ PAGINAS = ["🛰️ Briefing em tempo real", "🧭 Planejar voo", "📺 Aulas e 
 # key="pagina": dá para trocar de página por código (ex.: o botão "Planejar um voo" do briefing)
 aba = st.sidebar.radio("Ir para:", PAGINAS, key="pagina", label_visibility="collapsed")
 # Destaque do "Planejar voo" no menu: a 2ª opção do rádio em amarelo e negrito
-st.sidebar.markdown("<style>section[data-testid='stSidebar'] div[role='radiogroup'] > label:nth-child(2) p"
+# (o Streamlit muda o HTML entre versões, então o seletor pega a 2ª opção de forma ampla:
+#  qualquer texto dentro do 2º item do grupo de rádio da barra lateral)
+st.sidebar.markdown("<style>section[data-testid='stSidebar'] [role='radiogroup'] > *:nth-child(2) p,"
+                    "section[data-testid='stSidebar'] [role='radiogroup'] > *:nth-child(2) span"
                     "{color:#f1c40f !important;font-weight:700 !important}</style>", unsafe_allow_html=True)
 
 
@@ -314,7 +317,14 @@ if aba.startswith(("🛰️", "🧭")):
             """Índice do aeródromo na lista (para o formulário voltar preenchido), ou None."""
             return opcoes.index(icao) if icao in opcoes else None
 
-        caixa_plano = st.expander("✈️ Dados do voo", expanded=not st.session_state.get("plano"))
+        # Truque: com voo planejado o TÍTULO da caixa muda. Título novo = caixa nova para o Streamlit,
+        # e ela nasce recolhida (senão ele "lembra" que estava aberta e empurra o mapa para baixo).
+        if st.session_state.get("plano"):
+            o, d, a = st.session_state["plano"]
+            titulo_caixa = f"✈️ Dados do voo · {o} → {d}" + (f" (altn {a})" if a else "") + " · clique para alterar"
+        else:
+            titulo_caixa = "✈️ Dados do voo"
+        caixa_plano = st.expander(titulo_caixa, expanded=not st.session_state.get("plano"))
         with caixa_plano.form("planejamento"):
             c1, c2, c3 = st.columns(3)
             origem = c1.selectbox("Origem", opcoes, index=posicao(plano_salvo[0]), placeholder="Escolha...",
@@ -372,6 +382,8 @@ if aba.startswith(("🛰️", "🧭")):
                                                         "pontos": r["pontos"], "avisos": r["avisos"] + erros_av}
                         else:
                             st.session_state["rota_erro"] = r["erro"] + " Desenhei em linha reta."
+                # Plano salvo: redesenha a página já com o voo (a caixa "Dados do voo" volta recolhida)
+                st.rerun()
         b1, b2 = caixa_plano.columns(2)
         if st.session_state.get("plano") and b1.button("🧹 Limpar planejamento", use_container_width=True):
             del st.session_state["plano"]
