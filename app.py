@@ -339,6 +339,13 @@ if aba.startswith(("🛰️", "🧭")):
                                     help="Como no plano de voo: FIXO AEROVIA FIXO... Fixo solto = direto (DCT). "
                                          "SID/STAR e velocidade/nível (N0452F360) são ignorados. "
                                          "Deixe vazio para linha reta. Fora do Brasil: linha reta.")
+            # Tipo de aeronave: só para o perfil SIMULADO de subida/descida (TOC/TOD)
+            from modulos import perfil_voo as pv
+            tipos = list(pv.AERONAVES)
+            aeronave = st.selectbox("Aeronave (perfil simulado de subida e descida)", tipos,
+                                    index=tipos.index(st.session_state.get("aeronave", pv.PADRAO)),
+                                    format_func=pv.rotulo,
+                                    help="Usada só para estimar o TOC e o TOD (dados indicativos da EUROCONTROL).")
             c4, c5, c6, c7 = st.columns(4)
             nivel_escolhido = c4.selectbox("Nível de cruzeiro", pl.NIVEIS_CRUZEIRO, format_func=pl.fl_txt,
                                            index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", 100)))
@@ -362,6 +369,7 @@ if aba.startswith(("🛰️", "🧭")):
             else:
                 st.session_state["plano"] = [origem, destino, altn]
                 st.session_state["nivel"] = nivel_escolhido
+                st.session_state["aeronave"] = aeronave
                 st.session_state["voo"] = {"etd": etd, "eet_min": int(m_eet.group(1)) * 60 + int(m_eet.group(2))}
                 st.session_state.pop("pdf_voo", None)       # PDF de um plano anterior não vale mais
                 # ---- rota por aerovias ----
