@@ -91,6 +91,38 @@ def ultima_por_localidade(tipo, icaos, api_key):
     return ultimas, None
 
 
+def ultima_awc(tipo, icaos):
+    """RESERVA para aeródromos do EXTERIOR: busca METAR/TAF no Aviation Weather Center
+    (NOAA, EUA), serviço público e sem chave. Usado só para o que a REDEMET não devolver.
+    Devolve no MESMO formato do ultima_por_localidade: ({"SCEL": {"mens": ...}}, erro)."""
+    if not icaos:
+        return {}, None
+    url = f"https://aviationweather.gov/api/data/{tipo}"
+    try:
+        r = requests.get(url, params={"ids": ",".join(icaos), "format": "json"}, timeout=TIMEOUT,
+                         headers={"User-Agent": "meteorologia-hiremar (site de instrucao)"})
+        r.raise_for_status()
+        itens = r.json() if r.text.strip() else []      # sem nenhuma mensagem: resposta vazia
+    except Exception as e:
+        return {}, f"{tipo.upper()} do exterior indisponível às {_agora_z()} ({_motivo(e)})"
+    ultimas = {}
+    for item in itens:
+        icao = (item.get("icaoId") or "").upper()
+        texto = (item.get("rawOb") if tipo == "metar" else item.get("rawTAF")) or ""
+        texto = texto.strip()
+        if not icao or not texto:
+            continue
+        # Deixa igual ao padrão da REDEMET: "METAR SCEL ...=" (o AWC manda sem o "METAR" e sem "=")
+        if tipo == "metar" and not texto.startswith(("METAR", "SPECI")):
+            texto = "METAR " + texto
+        if not texto.endswith("="):
+            texto += "="
+        chave = str(item.get("obsTime") or item.get("issueTime") or "")
+        if icao not in ultimas or chave > ultimas[icao]["_chave"]:
+            ultimas[icao] = {"mens": texto, "_chave": chave, "fonte": "AWC/NOAA"}
+    return ultimas, None
+
+
 def mensagens_periodo(tipo, icaos, inicio, fim, api_key, max_paginas=40):
     """Consulta de mensagens PASSADAS, igual à tela "Consulta Mensagens" da REDEMET.
 

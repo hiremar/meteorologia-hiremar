@@ -19,6 +19,7 @@ from modulos import metar as mt
 from modulos import modelo_gfs as gfs
 from modulos import planejamento as pl
 from modulos import redemet as rd
+from modulos import rota as rt_mod
 from modulos import satelite as sat
 
 st.set_page_config(layout="wide", page_title="Meteorologia Aeronáutica · Prof. Hiremar", page_icon="🛰️")
@@ -97,10 +98,23 @@ def goes_rota(canal, regiao, arquivo):
 
 @st.cache_data(ttl=300, show_spinner=False)          # 5 min
 def metars_e_tafs(chave):
-    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
-    tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_ICAO, chave)
-    avisos, e3, diag = rd.avisos_aerodromo(ad.LISTA_ICAO, chave)
-    return metars, tafs, avisos, diag, [e for e in (e1, e2, e3) if e]
+    # Brasil: REDEMET (como sempre). Aviso de aeródromo só existe para os brasileiros.
+    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_BRASIL, chave)
+    tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_BRASIL, chave)
+    avisos, e3, diag = rd.avisos_aerodromo(ad.LISTA_BRASIL, chave)
+    erros = [e for e in (e1, e2, e3) if e]
+    # Exterior: pedido SEPARADO (se a REDEMET recusar, o Brasil não é afetado).
+    # O que a REDEMET não trouxer, busca no Aviation Weather Center (NOAA).
+    for tipo, destino in (("metar", metars), ("taf", tafs)):
+        achados, _ = rd.ultima_por_localidade(tipo, ad.LISTA_EXTERIOR, chave)
+        faltam = [i for i in ad.LISTA_EXTERIOR if i not in achados]
+        if faltam:
+            reserva, e_awc = rd.ultima_awc(tipo, faltam)
+            achados.update(reserva)
+            if e_awc and not achados:            # só reclama se o exterior ficou TODO sem mensagem
+                erros.append(e_awc)
+        destino.update(achados)
+    return metars, tafs, avisos, diag, erros
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -118,6 +132,27 @@ def modelo(horas_a_frente, hora_cheia_utc):
     # 'hora_cheia_utc' só serve para renovar o cache quando muda a hora
     conteudo, info = gfs.baixar(horas_a_frente)
     return gfs.ler_grib(conteudo), info
+
+
+@st.cache_data(ttl=86400, show_spinner=False)        # 1 dia: aerovia só muda na emenda AIRAC
+def segmentos_aerovias(nivel):
+    """Todos os segmentos de aerovia de 'alta' ou 'baixa' (GEOAISWEB, modulos/aerovias.py).
+    Se o download falhar, o erro "sobe" e o Streamlit NÃO guarda no cache (tenta de novo depois)."""
+    from modulos import aerovias as av
+    return av.baixar(nivel)
+
+
+def rede_aerovias():
+    """Junta alta + baixa numa rede só: (fixos, aerovias, erros)."""
+    from modulos import aerovias as av
+    segs, erros = [], []
+    for nivel in ("alta", "baixa"):
+        try:
+            segs += segmentos_aerovias(nivel)
+        except Exception as e:
+            erros.append(f"aerovias de {nivel} indisponíveis no GEOAISWEB agora ({type(e).__name__})")
+    fixos, aerovias = av.montar_rede(segs)
+    return fixos, aerovias, erros
 
 
 # Cartas do GeoAISWEB: { nome da camada no servidor: texto no menu }.
@@ -219,6 +254,10 @@ if aba.startswith("🛰️"):
         # WACs vizinhas não se sobrepõem: pode escolher várias (ex.: São Paulo + Rio).
         wacs = st.multiselect("Cartas visuais WAC", WACS, format_func=nome_wac,
                               help="A WAC fica por cima da ENRC na área dela.")
+        ver_aerovias = st.checkbox("Aerovias perto da rota (traço do DECEA)", value=True,
+                                   help="Com voo planejado: as aerovias em volta da rota, desenhadas a partir "
+                                        "dos dados do GEOAISWEB. Alta (FL245 ou acima) ou baixa, conforme o "
+                                        "nível de cruzeiro. Passe o mouse para ver o nome e os limites.")
 
     # Planejamento: só aparece quando o usuário clicar em "Planejar voo"
     # A aba do planejamento já vem ABERTA quando há um plano ativo (expanded=...).
@@ -231,6 +270,12 @@ if aba.startswith("🛰️"):
         destino = st.selectbox("Destino", opcoes, index=None, placeholder="Escolha...", format_func=ad.rotulo)
         altn = st.selectbox("Alternativa (opcional)", opcoes, index=None, placeholder="Escolha...",
                             format_func=ad.rotulo)
+        # Rota por aerovias (opcional). Vazia = linha reta, como antes.
+        rota_txt = st.text_area("Rota (opcional)", (st.session_state.get("rota") or {}).get("original", ""),
+                                height=68, placeholder="Ex.: UKBEV UZ26 SAMGA VUKEP",
+                                help="Como no plano de voo: FIXO AEROVIA FIXO... Fixo solto = direto (DCT). "
+                                     "SID/STAR e velocidade/nível (N0452F360) são ignorados. "
+                                     "Deixe vazio para linha reta.")
         nivel_escolhido = st.selectbox("Nível de cruzeiro", pl.NIVEIS_CRUZEIRO, format_func=pl.fl_txt,
                                        index=pl.NIVEIS_CRUZEIRO.index(st.session_state.get("nivel", 100)))
         # Horário do voo (UTC). Padrão: decolagem daqui a ~30 min e 1 h de voo.
@@ -256,8 +301,28 @@ if aba.startswith("🛰️"):
             st.session_state["nivel"] = nivel_escolhido
             st.session_state["voo"] = {"etd": etd, "eet_min": int(m_eet.group(1)) * 60 + int(m_eet.group(2))}
             st.session_state.pop("pdf_voo", None)       # PDF de um plano anterior não vale mais
+            # ---- rota por aerovias ----
+            st.session_state.pop("rota", None)          # começa do zero: sem rota = linha reta
+            st.session_state.pop("rota_erro", None)
+            if rota_txt and rota_txt.strip():
+                from modulos import aerovias as av
+                with st.spinner("Lendo as aerovias do GEOAISWEB..."):
+                    fixos, vias, erros_av = rede_aerovias()
+                if not vias:
+                    st.session_state["rota_erro"] = ("Não consegui baixar as aerovias agora ("
+                                                     + "; ".join(erros_av) + "). Desenhei em linha reta.")
+                else:
+                    r = av.ler_rota(rota_txt, fixos, vias, origem, destino)
+                    if r["ok"]:
+                        st.session_state["rota"] = {"od": (origem, destino), "original": rota_txt.strip(),
+                                                    "texto": av.texto_expandido(r["pontos"]),
+                                                    "pontos": r["pontos"], "avisos": r["avisos"] + erros_av}
+                    else:
+                        st.session_state["rota_erro"] = r["erro"] + " Desenhei em linha reta."
     if st.session_state.get("plano") and aba_plano.button("Limpar planejamento"):
         del st.session_state["plano"]
+        st.session_state.pop("rota", None)
+        st.session_state.pop("rota_erro", None)
         st.rerun()
     botao_guia(aba_plano)
     plano = st.session_state.get("plano")
@@ -269,6 +334,17 @@ if aba.startswith("🛰️"):
         st.title(f"🛰️ Briefing: {plano[0]} ✈️ {plano[1]}" + (f"  (altn {plano[2]})" if plano[2] else "")
                  + f" · {pl.fl_txt(nivel)}")
         st.caption(pl.txt_horarios(voo))
+        rota = pl.rota_ativa(plano)
+        if rota:
+            dist = pl.distancia_total(pl._pernas(plano))
+            reta = rt_mod.distancia_nm(ad.COORDS[plano[0]], ad.COORDS[plano[1]])
+            st.markdown(f"<div class='msg' style='border-left-color:#00f2ff;color:#cff9ff'>🛣️ ROTA: "
+                        f"{html.escape(rota['texto'])}<br>{dist:.0f} NM pela rota · {reta:.0f} NM em linha reta "
+                        f"(+{(dist / reta - 1) * 100:.0f}%)</div>", unsafe_allow_html=True)
+            for a in rota["avisos"]:
+                st.caption(f"ℹ️ {a}")
+        if st.session_state.get("rota_erro"):
+            st.warning("Rota: " + st.session_state["rota_erro"], icon="🛣️")
     else:
         st.title("🛰️ Briefing operacional")
     aviso_instrucao()
@@ -278,6 +354,11 @@ if aba.startswith("🛰️"):
     # ---------------- mapa ----------------
     m = folium.Map(location=[-15.0, -55.0], zoom_start=4, tiles=None, control_scale=True)
     m.get_root().header.add_child(folium.Element(cm.CSS_MAPA))
+    # Etiqueta com o nome do fixo da rota: texto pequeno, fundo escuro, ao lado da bolinha
+    m.get_root().header.add_child(folium.Element(
+        "<style>.fixo-rota{font:700 10px/1 'Segoe UI',Arial;color:#cff9ff;background:rgba(6,19,30,.85);"
+        "border:1px solid #00f2ff;border-radius:3px;padding:1px 3px;white-space:nowrap;"
+        "transform:translate(7px,-16px);display:inline-block;pointer-events:none}</style>"))
     # Com carta ENRC/WAC na tela, as linhas de estados/países do mapa ficam desligadas
     cm.adicionar_mapas_fundo(m, rotulos=(enrc == "Nenhuma" and not wacs))     # (a SIGWX não tem fronteiras)
 
@@ -393,12 +474,43 @@ if aba.startswith("🛰️"):
             cm.Legenda(cm.legenda_categorias(estilo), "bottomright").add_to(m)
 
     if plano:
-        pts = [ad.COORDS[plano[0]], ad.COORDS[plano[1]]]
-        folium.PolyLine(pts, color="#00f2ff", weight=4, opacity=0.9, tooltip="Rota").add_to(m)
+        pts = pl._pernas(plano)                  # origem, fixos da rota (se houver) e destino
+        rota = pl.rota_ativa(plano)
+
+        # 1) Aerovias em volta da rota (referência). Desenhadas ANTES = ficam embaixo da rota.
+        if ver_aerovias:
+            from modulos import aerovias as av
+            nivel_av = "alta" if nivel >= 245 else "baixa"
+            try:
+                caixa = rt_mod.limites(pts, margem_graus=1.0, minimo_graus=3)
+                grupo = folium.FeatureGroup(name=f"Aerovias de {nivel_av} (DECEA)")
+                for s in av.segmentos_na_caixa(segmentos_aerovias(nivel_av), caixa):
+                    folium.PolyLine(s["pts"], color="#5b7cfa", weight=2, opacity=0.75,
+                                    tooltip=f"{s['aerovia']} · {s['de']}→{s['para']} · "
+                                            f"{s['base']} a {s['topo']}"
+                                            + (" · mão única" if s["direcao"] != "BOTH" else "")).add_to(grupo)
+                grupo.add_to(m)
+                chips.append((f"Aerovias de {nivel_av}: GEOAISWEB", False))
+            except Exception as e:
+                avisos.append(f"Aerovias indisponíveis no GEOAISWEB agora ({type(e).__name__}).")
+
+        # 2) A rota: linha preta por baixo + ciano por cima (contorno, lê bem sobre o satélite)
+        dica = f"Rota: {rota['texto']}" if rota else "Rota direta (linha reta)"
+        folium.PolyLine(pts, color="#000000", weight=7, opacity=0.6).add_to(m)
+        folium.PolyLine(pts, color="#00f2ff", weight=4, opacity=0.95, tooltip=dica).add_to(m)
+        if rota:                                  # bolinha + nome em cada fixo
+            fixos_grupo = folium.FeatureGroup(name="Fixos da rota")
+            for p in rota["pontos"]:
+                folium.CircleMarker([p["lat"], p["lon"]], radius=4, color="#000", weight=1, fill=True,
+                                    fill_color="#00f2ff", fill_opacity=1,
+                                    tooltip=f"{p['ident']} (via {p['via']})").add_to(fixos_grupo)
+                folium.Marker([p["lat"], p["lon"]], icon=folium.DivIcon(
+                    html=f"<div class='fixo-rota'>{p['ident']}</div>", icon_size=(0, 0))).add_to(fixos_grupo)
+            fixos_grupo.add_to(m)
         if plano[2]:
             folium.PolyLine([ad.COORDS[plano[1]], ad.COORDS[plano[2]]], color="#c77dff", weight=3,
                             dash_array="6 6", tooltip="Para a alternativa").add_to(m)
-        m.fit_bounds([ad.COORDS[i] for i in plano if i], padding=(60, 60))
+        m.fit_bounds([ad.COORDS[i] for i in plano if i] + pts, padding=(60, 60))
 
     plugins.Fullscreen().add_to(m)
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
