@@ -180,6 +180,53 @@ def sigwx(api_key):
         return None, f"Carta SIGWX indisponível às {_agora_z()} ({_motivo(e)})"
 
 
+URL_CARTAS_SIGWX = "https://api-redemet.decea.mil.br/produtos/cartas/sigwx/"
+URL_ESTATICO_SIGWX = "https://estatico-redemet.decea.mil.br/sigwx"
+
+
+def cartas_sigwx(api_key):
+    """LISTA de todas as cartas SIGWX que a REDEMET tem agora (é a mesma lista que aparece
+    no site da REDEMET em Produtos > Cartas > SIGWX), já com a VALIDADE e a marca de EMENDA.
+
+    Por que isto existe: o nome do arquivo não diz a validade (siginf00.gif do dia 10 vale
+    para 11/10 00Z) e a carta emendada tem outro nome (siginf-amd-00.gif). Esta lista diz
+    as duas coisas direto, sem precisar "ler" a imagem.
+
+    Retorna (lista, erro). Cada item é um dicionário:
+      {"arquivo": "siginf-amd-00.gif", "validade": datetime UTC, "url": endereço da imagem,
+       "amd": True/False, "emitida": datetime UTC (quando a REDEMET publicou) ou None}"""
+    try:
+        r = requests.get(URL_CARTAS_SIGWX, params={"api_key": api_key}, timeout=TIMEOUT)
+        r.raise_for_status()
+        js = r.json()
+        if js.get("status") is False:
+            raise RecusaAPI(str(js.get("message", "recusado pela API"))[:120])
+        lista = []
+        # A resposta é: data -> {nome do produto: {"dados": {"00z": [cartas], "06z": [...]}}}
+        for produto in (js.get("data") or {}).values():
+            for cartas_do_horario in ((produto or {}).get("dados") or {}).values():
+                for c in cartas_do_horario or []:
+                    if not c.get("disponivel", True) or not c.get("path_arquivo"):
+                        continue
+                    # validade = data ("2026-10-11") + hora ("00z")
+                    hora = int(re.sub(r"\D", "", c.get("horario_zulu", "")) or 0)
+                    dia = datetime.strptime(c["validade_utc"], "%Y-%m-%d")
+                    validade = dia.replace(hour=hora, tzinfo=timezone.utc)
+                    emitida = None
+                    if c.get("criado_em"):
+                        emitida = datetime.strptime(c["criado_em"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    lista.append({"arquivo": c["path_arquivo"].rsplit("/", 1)[-1],
+                                  "validade": validade,
+                                  "url": URL_ESTATICO_SIGWX + c["path_arquivo"],
+                                  "amd": bool(c.get("is_amd")),
+                                  "emitida": emitida})
+        if not lista:
+            raise RecusaAPI("lista de cartas vazia")
+        return lista, None
+    except Exception as e:
+        return [], f"Lista de cartas SIGWX indisponível às {_agora_z()} ({_motivo(e)})"
+
+
 def sigmets(api_key):
     """SIGMETs vigentes. Retorna (lista de textos, erro)."""
     try:
