@@ -286,8 +286,9 @@ def resumo_txt(p, etd=None):
             f"descida de ~{p['tod_min']:.0f} min")
 
 
-def grafico_png(p, titulo=""):
-    """Desenho do perfil vertical (distância × altitude), em PNG, para o site e o PDF."""
+def grafico_png(p, titulo="", real=None):
+    """Desenho do perfil vertical (distância × altitude), em PNG, para o site e o PDF.
+    real (opcional) = tracklog.perfil_real(): desenha o voo REAL por cima, em verde."""
     import io
     import matplotlib
     matplotlib.use("Agg")
@@ -296,7 +297,17 @@ def grafico_png(p, titulo=""):
     ys = [h / 100 for _, h in p["perfil"]]          # em FL (centenas de pés)
     fig, ax = plt.subplots(figsize=(9, 3.2), dpi=130)
     ax.fill_between(xs, ys, color="#1f77b4", alpha=0.12)
-    ax.plot(xs, ys, color="#1f77b4", lw=2.2)
+    ax.plot(xs, ys, color="#1f77b4", lw=2.2, label="simulado")
+    x_max, y_max = p["dist_total_nm"], max(max(ys), p["fl"])
+    if real:
+        rx = [d for d, _ in real["perfil"]]
+        ry = [h / 100 for _, h in real["perfil"]]
+        ax.plot(rx, ry, color="#2e9e44", lw=2, label="voo real (track log)")
+        for x, nome in ((real["toc_nm"], "TOC"), (real["total_nm"] - real["tod_nm"], "TOD")):
+            ax.plot([x], [real["nivel_fl"]], marker="v", color="#2e9e44", ms=7)
+            ax.annotate(f"{nome} real\n{x:.0f} NM", (x, real["nivel_fl"]), xytext=(0, -26),
+                        textcoords="offset points", ha="center", fontsize=7.5, color="#1d6b2d")
+        x_max, y_max = max(x_max, real["total_nm"]), max(y_max, max(ry))
     if p["atinge_nivel"]:
         d_tod = p["dist_total_nm"] - p["tod_nm"]
         for x, nome in ((p["toc_nm"], "TOC"), (d_tod, "TOD")):
@@ -307,7 +318,6 @@ def grafico_png(p, titulo=""):
         x3 = p["dist_total_nm"] - p["regra_3x1_nm"]
         ax.plot([x3, p["dist_total_nm"]], [p["fl"], p["elev_destino"] / 100], color="#888", ls=":", lw=1.4,
                 label=f"regra 3:1 (TOD a {p['regra_3x1_nm']:.0f} NM do destino)")
-        ax.legend(loc="lower center", fontsize=8, frameon=False)
     else:
         d_topo, h_topo = max(p["perfil"], key=lambda x: x[1])
         ax.axhline(p["fl"], color="#d7263d", ls="--", lw=1)
@@ -315,8 +325,9 @@ def grafico_png(p, titulo=""):
                     textcoords="offset points", ha="center", fontsize=8, color="#d7263d")
         ax.annotate(f"topo ~FL{round(h_topo / 1000) * 10:03d}", (d_topo, h_topo / 100), xytext=(0, 6),
                     textcoords="offset points", ha="center", fontsize=8, fontweight="bold")
-    ax.set_xlim(0, p["dist_total_nm"])
-    ax.set_ylim(0, max(max(ys), p["fl"]) * 1.22)
+    ax.legend(loc="lower center", fontsize=8, frameon=False, ncol=3)
+    ax.set_xlim(0, x_max)
+    ax.set_ylim(0, y_max * 1.22)
     ax.set_xlabel("distância desde a origem (NM)")
     ax.set_ylabel("nível (FL)")
     ax.set_title(titulo or f"Perfil vertical simulado · {p['nome']} · FL{p['fl']:03d}", fontsize=10)
