@@ -1,4 +1,5 @@
-"""Aeródromos exibidos no mapa: os que atendem as 27 capitais + alguns extras.
+"""Aeródromos exibidos no mapa: os que atendem as 27 capitais + alguns extras,
+e os principais da América do Sul (lista EXTERIOR, mais abaixo).
 
 Para acrescentar um aeródromo, basta copiar uma linha e trocar os dados.
 Coordenadas em graus decimais (sul e oeste são negativos).
@@ -57,6 +58,61 @@ AERODROMOS = [
     ("SBES", "São Pedro da Aldeia",   "RJ", -22.8128,  -42.0926),
     ("SBCB", "Cabo Frio",             "RJ", -22.9217,  -42.0743),
 ]
+
+# ---------------------------------------------------------------------------
+# AMÉRICA DO SUL (fora do Brasil): capitais + principais aeroportos.
+# Aqui a terceira coluna é o PAÍS (no Brasil é a UF). Sem cartas/aerovias do DECEA:
+# no planejamento o voo para o exterior fica em linha reta.
+# Coordenadas aproximadas do aeródromo (conferir na AIP do país se precisar).
+# ---------------------------------------------------------------------------
+EXTERIOR = [
+    # Argentina
+    ("SAEZ", "Buenos Aires/Ezeiza",       "Argentina", -34.8222, -58.5358),
+    ("SABE", "Buenos Aires/Aeroparque",   "Argentina", -34.5592, -58.4156),
+    ("SACO", "Córdoba",                   "Argentina", -31.3236, -64.2080),
+    ("SAME", "Mendoza",                   "Argentina", -32.8317, -68.7929),
+    ("SAAR", "Rosario",                   "Argentina", -32.9036, -60.7850),
+    ("SARI", "Puerto Iguazú",             "Argentina", -25.7373, -54.4734),
+    ("SAZS", "Bariloche",                 "Argentina", -41.1512, -71.1575),
+    ("SAWH", "Ushuaia",                   "Argentina", -54.8433, -68.2958),
+    # Uruguai
+    ("SUMU", "Montevidéu/Carrasco",       "Uruguai",   -34.8384, -56.0308),
+    ("SULS", "Punta del Este",            "Uruguai",   -34.8551, -55.0943),
+    # Paraguai
+    ("SGAS", "Assunção",                  "Paraguai",  -25.2400, -57.5191),
+    ("SGES", "Ciudad del Este",           "Paraguai",  -25.4544, -54.8429),
+    # Chile
+    ("SCEL", "Santiago",                  "Chile",     -33.3930, -70.7858),
+    ("SCDA", "Iquique",                   "Chile",     -20.5352, -70.1813),
+    ("SCFA", "Antofagasta",               "Chile",     -23.4445, -70.4451),
+    ("SCTE", "Puerto Montt",              "Chile",     -41.4389, -73.0940),
+    ("SCCI", "Punta Arenas",              "Chile",     -53.0026, -70.8546),
+    # Bolívia
+    ("SLLP", "La Paz/El Alto",            "Bolívia",   -16.5133, -68.1923),
+    ("SLVR", "Santa Cruz/Viru Viru",      "Bolívia",   -17.6448, -63.1354),
+    ("SLCB", "Cochabamba",                "Bolívia",   -17.4211, -66.1771),
+    # Peru
+    ("SPJC", "Lima",                      "Peru",      -12.0219, -77.1143),
+    ("SPZO", "Cusco",                     "Peru",      -13.5357, -71.9388),
+    # Equador
+    ("SEQM", "Quito",                     "Equador",    -0.1292, -78.3575),
+    ("SEGU", "Guayaquil",                 "Equador",    -2.1574, -79.8836),
+    # Colômbia
+    ("SKBO", "Bogotá",                    "Colômbia",    4.7016, -74.1469),
+    ("SKRG", "Medellín/Rionegro",         "Colômbia",    6.1645, -75.4231),
+    ("SKCL", "Cali",                      "Colômbia",    3.5432, -76.3816),
+    # Venezuela e Guianas
+    ("SVMI", "Caracas/Maiquetía",         "Venezuela",  10.6031, -66.9906),
+    ("SYCJ", "Georgetown",                "Guiana",      6.4985, -58.2541),
+    ("SMJP", "Paramaribo",                "Suriname",    5.4528, -55.1878),
+    ("SOCA", "Caiena",                    "Guiana Francesa", 4.8198, -52.3604),
+]
+
+# Listas separadas: a REDEMET pode não ter mensagem de aeródromo estrangeiro, então o
+# app.py pede o Brasil e o exterior em consultas diferentes (um não derruba o outro).
+LISTA_BRASIL = [a[0] for a in AERODROMOS]
+LISTA_EXTERIOR = [a[0] for a in EXTERIOR]
+AERODROMOS = AERODROMOS + EXTERIOR                  # daqui para baixo: todos juntos
 
 # Dicionários de acesso rápido:  COORDS["SBGR"] -> [-23.4356, -46.4731]
 COORDS = {icao: [lat, lon] for icao, _, _, lat, lon in AERODROMOS}

@@ -98,10 +98,23 @@ def goes_rota(canal, regiao, arquivo):
 
 @st.cache_data(ttl=300, show_spinner=False)          # 5 min
 def metars_e_tafs(chave):
-    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_ICAO, chave)
-    tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_ICAO, chave)
-    avisos, e3, diag = rd.avisos_aerodromo(ad.LISTA_ICAO, chave)
-    return metars, tafs, avisos, diag, [e for e in (e1, e2, e3) if e]
+    # Brasil: REDEMET (como sempre). Aviso de aeródromo só existe para os brasileiros.
+    metars, e1 = rd.ultima_por_localidade("metar", ad.LISTA_BRASIL, chave)
+    tafs, e2 = rd.ultima_por_localidade("taf", ad.LISTA_BRASIL, chave)
+    avisos, e3, diag = rd.avisos_aerodromo(ad.LISTA_BRASIL, chave)
+    erros = [e for e in (e1, e2, e3) if e]
+    # Exterior: pedido SEPARADO (se a REDEMET recusar, o Brasil não é afetado).
+    # O que a REDEMET não trouxer, busca no Aviation Weather Center (NOAA).
+    for tipo, destino in (("metar", metars), ("taf", tafs)):
+        achados, _ = rd.ultima_por_localidade(tipo, ad.LISTA_EXTERIOR, chave)
+        faltam = [i for i in ad.LISTA_EXTERIOR if i not in achados]
+        if faltam:
+            reserva, e_awc = rd.ultima_awc(tipo, faltam)
+            achados.update(reserva)
+            if e_awc and not achados:            # só reclama se o exterior ficou TODO sem mensagem
+                erros.append(e_awc)
+        destino.update(achados)
+    return metars, tafs, avisos, diag, erros
 
 
 @st.cache_data(ttl=300, show_spinner=False)
