@@ -33,6 +33,8 @@ from . import rota as rt
 NIVEIS_CRUZEIRO = list(range(30, 460, 10))
 CORREDORES = [25, 50, 100]          # NM para cada lado da rota
 URL_SIGWX = "https://estatico-redemet.decea.mil.br/sigwx/{t:%Y/%m/%d}/{nome}{t:%H}.gif"
+# Carta EMENDADA (AMD): mesmo lugar, outro nome. Visto em 10/10/2026: siginf-amd-00.gif
+URL_SIGWX_AMD = "https://estatico-redemet.decea.mil.br/sigwx/{t:%Y/%m/%d}/{nome}-amd-{t:%H}.gif"
 # O nome do arquivo NÃO diz a validade com segurança. Em 08/10/2026 vimos:
 #   2026/10/08/siginf06.gif -> "VALID 12 UTC 09-OCT-2026"  (30 h depois do nome)
 #   2026/10/07/siginf18.gif -> "VALID 18 UTC 08-OCT-2026"  (24 h depois do nome)
@@ -86,6 +88,11 @@ def _mais_recente(tipo, icaos, chave):
 @st.cache_data(ttl=1800, show_spinner=False)        # a SIGWX muda poucas vezes por dia
 def _sigwx_url(chave):
     return rd.sigwx(chave)
+
+
+@st.cache_data(ttl=600, show_spinner=False)         # 10 min: uma emenda (AMD) pode sair a qualquer hora
+def _lista_sigwx(chave):
+    return rd.cartas_sigwx(chave)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -156,37 +163,80 @@ def _validade_do_arquivo(url):
     return png, validade_impressa(png)
 
 
+def _mesma_validade(lida, v):
+    """A validade lida na imagem bate com a do voo? Comparamos dia, mês e hora e IGNORAMOS o
+    ano: em 10/10/2026 o leitor de texto leu "11-OCT-2025" numa carta de 2026 (o 6 virou 5)
+    e o site descartou a carta certa."""
+    return lida is not None and (lida.month, lida.day, lida.hour) == (v.month, v.day, v.hour)
+
+
+def _nota_amd(c):
+    quando = f" em {c['emitida']:%d/%m %H:%M}Z" if c.get("emitida") else ""
+    return (f"⚠️ CARTA EMENDADA (AMD), publicada{quando}: substitui a versão original desta validade. "
+            "Confira se não saiu outra emenda depois. ")
+
+
 def sigwx_do_voo(voo, api_key):
     """Cartas SIGWX que cobrem o voo (validade ±3 h, Doc 8896). Devolve lista de dicts
-    {validade, titulo, url, png (ou None), nota}.
+    {validade, titulo, url, png (ou None), nota, amd}.
 
-    Para cada validade necessária, abrimos os arquivos candidatos da REDEMET e LEMOS a
-    validade impressa; só fica a carta que bate. Sem o leitor de texto, usamos o padrão
-    mais comum (24 h) e avisamos para conferir."""
+    1º caminho: a LISTA de cartas da REDEMET (rd.cartas_sigwx), que já diz a validade e se a
+       carta foi EMENDADA (AMD). Havendo AMD para a validade, ela é a escolhida.
+    2º caminho (reserva, se a lista falhar): abrir os arquivos candidatos e LER a validade
+       impressa na carta (Tesseract), como era antes."""
     etd, eta, _ = horarios(voo)
+    lista, erro_lista = _lista_sigwx(api_key)
     cartas = []
     for v in rt.validades_do_voo(etd, eta, 6):
         for nome, faixa in CARTAS_SIGWX:
             uso = f"usar de {v - timedelta(hours=3):%d/%m %H}Z a {v + timedelta(hours=3):%d/%m %H}Z"
             carta = {"validade": v, "titulo": f"SIGWX {faixa} válida {v:%d/%m %H}Z", "url": None, "png": None,
-                     "nota": f"carta desta validade ainda não está na REDEMET ({uso})."}
-            sem_leitura = None
-            for horas in DESLOCAMENTOS_SIGWX_H:
-                url = URL_SIGWX.format(t=v - timedelta(hours=horas), nome=nome)
+                     "amd": False, "nota": f"carta desta validade ainda não está na REDEMET ({uso})."}
+
+            # --- 1º caminho: a lista da REDEMET ---------------------------------------
+            candidatas = [c for c in lista if c["validade"] == v and c["arquivo"].startswith(nome)]
+            # ordem de preferência: AMD antes da original; entre iguais, a publicada por último
+            candidatas.sort(key=lambda c: (c["amd"], c["emitida"] or v), reverse=True)
+            for c in candidatas:
                 try:
-                    png, lida = _validade_do_arquivo(url)
+                    png = _imagem_png(c["url"])
                 except Exception:
-                    continue                          # arquivo não existe: tenta o próximo
-                if lida == v:
-                    carta.update(url=url, png=png, nota=f"Doc 8896: {uso}. Validade conferida na carta "
-                                                        f"(arquivo {url.rsplit('/sigwx/', 1)[-1]}).")
-                    break
-                if lida is None and sem_leitura is None and horas == 24:
-                    sem_leitura = (url, png)           # leitor indisponível: guarda o palpite mais provável
-            if not carta["png"] and sem_leitura:
-                url, png = sem_leitura
-                carta.update(url=url, png=png, nota=f"Doc 8896: {uso}. ATENÇÃO: não foi possível ler a validade "
-                                                    "na carta; confira o quadro VALID antes de usar.")
+                    continue                          # imagem não abriu: tenta a próxima
+                carta.update(url=c["url"], png=png, amd=c["amd"],
+                             nota=(_nota_amd(c) if c["amd"] else "") +
+                                  f"Doc 8896: {uso}. Validade informada pela REDEMET (arquivo {c['arquivo']}).")
+                if c["amd"]:
+                    carta["titulo"] += " — EMENDADA (AMD)"
+                break
+
+            # --- 2º caminho (reserva): ler a validade impressa na imagem ----------------
+            if not carta["png"] and erro_lista:
+                sem_leitura = None
+                for horas in DESLOCAMENTOS_SIGWX_H:
+                    t = v - timedelta(hours=horas)
+                    # a emenda primeiro (siginf-amd-00.gif), depois a original (siginf00.gif)
+                    for amd, url in ((True, URL_SIGWX_AMD.format(t=t, nome=nome)),
+                                     (False, URL_SIGWX.format(t=t, nome=nome))):
+                        try:
+                            png, lida = _validade_do_arquivo(url)
+                        except Exception:
+                            continue                  # arquivo não existe: tenta o próximo
+                        if _mesma_validade(lida, v):
+                            arq = url.rsplit('/sigwx/', 1)[-1]
+                            carta.update(url=url, png=png, amd=amd,
+                                         nota=(_nota_amd({}) if amd else "") +
+                                              f"Doc 8896: {uso}. Validade conferida na carta (arquivo {arq}).")
+                            if amd:
+                                carta["titulo"] += " — EMENDADA (AMD)"
+                            break
+                        if lida is None and sem_leitura is None and horas == 24 and not amd:
+                            sem_leitura = (url, png)   # leitor indisponível: guarda o palpite mais provável
+                    if carta["png"]:
+                        break
+                if not carta["png"] and sem_leitura:
+                    url, png = sem_leitura
+                    carta.update(url=url, png=png, nota=f"Doc 8896: {uso}. ATENÇÃO: não foi possível ler a "
+                                                        "validade na carta; confira o quadro VALID antes de usar.")
             cartas.append(carta)
     if not any(c["png"] for c in cartas):          # nenhuma por validade: mostra a mais recente da API
         url, erro = _sigwx_url(api_key)
@@ -321,6 +371,9 @@ def aba_sigwx(api_key, plano=None, voo=None):
         with st.spinner("Buscando as cartas na REDEMET..."):
             cartas = sigwx_do_voo(voo, api_key)
         for c in cartas:
+            if c.get("amd"):
+                st.warning(f"**{c['titulo']}**: a CIMAER emendou esta carta. O site mostra a versão "
+                           "emendada (AMD), que substitui a original.", icon="⚠️")
             st.markdown(f"**{c['titulo']}** · {c['nota']}")
             if c["png"]:
                 st.image(c["png"], use_container_width=True)
@@ -584,6 +637,10 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
 
     if "sigwx" in opcoes:
         b["sigwx"] = [c for c in (sigwx or []) if c["png"]]
+        for c in b["sigwx"]:
+            if c.get("amd"):
+                b["indisponiveis"].append(f"SIGWX válida {c['validade']:%d/%m %H}Z foi EMENDADA (AMD): "
+                                          "o briefing usa a versão emendada.")
         faltando = [c for c in (sigwx or []) if not c["png"] and c["validade"]]
         if not b["sigwx"]:
             b["indisponiveis"].append("carta SIGWX indisponível na REDEMET: o PDF saiu sem ela.")
