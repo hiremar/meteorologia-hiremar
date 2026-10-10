@@ -179,7 +179,7 @@ def gerar(b):
     agora = b.get("gerado_em") or datetime.now(timezone.utc)
     hist.append(Paragraph(_t(
         f"{b['nivel']} · {b.get('horarios', '')} · distância {b['distancia_nm']} NM · "
-        f"rumo verdadeiro inicial {b['rumo']:03d}° · gerado em {agora:%d/%m/%Y %H:%M}Z"), E["sub"]))
+        f"rumo geral (origem→destino) {b['rumo']:03d}°V · gerado em {agora:%d/%m/%Y %H:%M}Z"), E["sub"]))
     if b.get("resumo"):
         hist.append(Spacer(1, 3 * mm))
         linhas = [[Paragraph(f"<b>{_t(k)}</b>", E["corpo"]), Paragraph(_t(v), E["corpo"])] for k, v in b["resumo"]]

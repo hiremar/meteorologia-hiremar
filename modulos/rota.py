@@ -109,6 +109,10 @@ def aerodromos_no_corredor(amostras, aerodromos, corredor_nm, excluir=(), longe_
             continue
         dists = [(distancia_nm((lat, lon), (la, lo)), acum) for la, lo, acum, _ in amostras]
         d, acum = min(dists)
+        # Se o ponto da rota mais perto dele é a PRÓPRIA origem ou o PRÓPRIO destino, o aeródromo
+        # fica "atrás" da partida ou "depois" da chegada (ex.: SBKP num voo SBSP->SBRJ): não é em rota.
+        if acum <= 0 or acum >= amostras[-1][2]:
+            continue
         if d <= corredor_nm:
             achados.append((acum, icao, round(d)))
     return [(icao, d) for _, icao, d in sorted(achados)]
