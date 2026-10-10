@@ -344,8 +344,31 @@ def aba_sigwx(api_key, plano=None, voo=None):
 # ============================================================================
 # 3) Vento na rota
 # ============================================================================
+def rota_ativa(plano):
+    """A rota por aerovias (lida em modulos/aerovias.py e guardada na sessão pelo app.py),
+    se ela pertencer a ESTE plano (mesma origem e destino). Senão None = linha reta.
+    O try/except deixa a função funcionar também fora do site (testes, sem Streamlit)."""
+    try:
+        r = st.session_state.get("rota")
+    except Exception:
+        return None
+    if r and plano and r.get("od") == (plano[0], plano[1]):
+        return r
+    return None
+
+
 def _pernas(plano):
-    return [ad.COORDS[plano[0]], ad.COORDS[plano[1]]]
+    """Pontos [lat, lon] por onde o voo passa: origem, fixos da rota (se houver) e destino.
+    TUDO que segue a rota (vento, SIGMET e raios no corredor, aeródromos em rota, mapa do PDF)
+    usa esta lista, então mudar só aqui já faz o resto seguir a aerovia."""
+    r = rota_ativa(plano)
+    meio = [[p["lat"], p["lon"]] for p in r["pontos"]] if r else []
+    return [ad.COORDS[plano[0]], *meio, ad.COORDS[plano[1]]]
+
+
+def distancia_total(pernas):
+    """Soma das pernas (com rota por aerovia a distância é maior que a linha reta)."""
+    return sum(rt.distancia_nm(a, b) for a, b in zip(pernas, pernas[1:]))
 
 
 def _posicao(l):
@@ -384,7 +407,7 @@ def _mapa_vento(dados_val, fl, plano, linhas):
     from . import mapa_estatico as me
     validades = sorted({l["validade"] for l in linhas})
     meio = validades[len(validades) // 2]
-    pontos = [ad.COORDS[i] for i in plano if i]
+    pontos = [ad.COORDS[i] for i in plano if i] + _pernas(plano)
     return me.mapa_vento(rt.limites(pontos, margem_graus=1.2, minimo_graus=5), dados_val[meio], fl,
                          _pernas(plano), ad.COORDS[plano[2]] if plano[2] else None,
                          f"Vento {fl_txt(fl)} · GFS válido {meio:%d/%m %H}Z",
@@ -460,7 +483,8 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
     amostras = rt.pontos_da_rota(pernas, 10)
     b = {"origem": origem, "destino": destino, "altn": altn, "nivel": fl_txt(fl),
          "horarios": txt_horarios(voo),
-         "distancia_nm": round(rt.distancia_nm(*pernas)), "rumo": round(rt.rumo_verdadeiro(*pernas)),
+         # distância = soma das pernas; rumo = direção geral de origem para destino
+         "distancia_nm": round(distancia_total(pernas)), "rumo": round(rt.rumo_verdadeiro(pernas[0], pernas[-1])),
          "corredor_nm": corredor_nm, "gerado_em": agora, "indisponiveis": []}
 
     em_rota = rt.aerodromos_no_corredor(amostras, ad.AERODROMOS, corredor_nm, excluir=plano,
@@ -493,7 +517,10 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
     pior = min(cats, key=ordem.index) if cats else "ND"
     com_aviso = [i for i in [*plano, *(i for i, _ in em_rota)] if i and avisos_ad.get(i)]
     no_nivel = [t for t, n in na_rota if n]
+    rota = rota_ativa(plano)
     b["resumo"] = [
+        ("Rota", (rota["texto"] + f"  ({b['distancia_nm']} NM)") if rota
+         else f"direta (linha reta, {b['distancia_nm']} NM)"),
         ("Horários", txt_horarios(voo)),
         ("Categorias agora (FAA)", " · ".join(f"{i} {c}" for i, c in zip([i for i in plano if i], cats)) +
          f"  (pior: {pior})"),
@@ -530,7 +557,7 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
 
     # ---------- mapa ----------
     if "mapa" in opcoes:
-        pts = [ad.COORDS[i] for i in plano if i]
+        pts = [ad.COORDS[i] for i in plano if i] + pernas
         folha = me.MapaEstatico(rt.limites(pts, margem_graus=1.5, minimo_graus=5))
         folha.fundo()
         if satelite:
