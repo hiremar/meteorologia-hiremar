@@ -26,6 +26,7 @@ import streamlit as st
 from . import aerodromos as ad
 from . import metar as mt
 from . import modelo_gfs as gfs
+from . import perfil_voo as pv
 from . import redemet as rd
 from . import rota as rt
 
@@ -389,8 +390,11 @@ def tabela_comparacao(ventos, fl):
              "Desvio ISA": f"ISA{r['isa_desvio_medio']:+d}"} for n, (_, r) in ventos.items()]
 
 
-def _tabela_vento(linhas):
-    return [{"Nº": l["n"], "Distância": f"{l['dist_nm']} NM", "Hora": f"{l['hora']:%H:%M}Z",
+def _tabela_vento(linhas, perfil=None):
+    """perfil (opcional) = resultado de pv.calcular(): acrescenta a coluna Fase (subida/cruzeiro/descida)."""
+    return [{"Nº": l["n"], "Distância": f"{l['dist_nm']} NM",
+             **({"Fase": pv.texto_fase(perfil, l["dist_nm"])} if perfil else {}),
+             "Hora": f"{l['hora']:%H:%M}Z",
              "Posição": _posicao(l), "Vento": l["vento"], "Temperatura": f"{l['temp_c']} °C",
              "Desvio ISA": f"ISA{l['isa_desvio']:+d}", "Componente": rt.texto_componente(l["componente"]),
              "GFS válido": f"{l['validade']:%d/%m %H}Z"} for l in linhas]
@@ -414,6 +418,54 @@ def _mapa_vento(dados_val, fl, plano, linhas):
                          numerados=[(l["n"], l["lat"], l["lon"]) for l in linhas])
 
 
+# ----------------------------------------------------------------------------
+# Perfil vertical (TOC/TOD) - SIMULADO. A conta está em modulos/perfil_voo.py
+# ----------------------------------------------------------------------------
+def aeronave_escolhida():
+    """Tipo escolhido no formulário (guardado na sessão). Fora do site: o padrão (A320)."""
+    try:
+        return st.session_state.get("aeronave") or pv.PADRAO
+    except Exception:
+        return pv.PADRAO
+
+
+def perfil_do_voo(plano, fl, aeronave=None, vento_kt=0):
+    """Calcula o perfil com a distância REAL da rota (aerovias, se houver) e a elevação dos aeródromos."""
+    return pv.calcular(aeronave or aeronave_escolhida(), fl, distancia_total(_pernas(plano)),
+                       pv.ELEVACAO_FT.get(plano[0], 0), pv.ELEVACAO_FT.get(plano[1], 0), vento_kt)
+
+
+def _avisos_elevacao(plano):
+    faltam = [i for i in plano[:2] if i not in pv.ELEVACAO_FT]
+    return (f"Elevação não cadastrada para {', '.join(faltam)}: considerada 0 ft." if faltam else "")
+
+
+def bloco_perfil(plano, fl, voo, vento_kt=None):
+    """Quadro do perfil vertical na aba de vento. vento_kt = componente média no nível (None = sem GFS)."""
+    p = perfil_do_voo(plano, fl, vento_kt=vento_kt or 0)
+    etd, _, eet = horarios(voo)
+    st.markdown(f"**📈 Perfil vertical simulado · {p['nome']} · {fl_txt(fl)}**")
+    for a in p["avisos"]:
+        st.warning(a, icon="⚠️")
+    if p["atinge_nivel"]:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("TOC (topo da subida)", f"{p['toc_nm']:.0f} NM",
+                  f"{p['toc_min']:.0f} min · {etd + timedelta(minutes=p['toc_min']):%H:%M}Z", delta_color="off")
+        c2.metric("TOD (início da descida)", f"{p['tod_nm']:.0f} NM antes",
+                  f"descida de ~{p['tod_min']:.0f} min", delta_color="off")
+        c3.metric("Regra prática 3:1", f"{p['regra_3x1_nm']:.0f} NM antes",
+                  "3 NM por 1.000 ft a perder", delta_color="off")
+        c4.metric("EET pelo perfil", f"{int(p['eet_perfil_min']) // 60:02d}:{int(p['eet_perfil_min']) % 60:02d}",
+                  f"você informou {eet // 60:02d}:{eet % 60:02d}", delta_color="off")
+    st.image(pv.grafico_png(p), use_container_width=True)
+    extra = _avisos_elevacao(plano)
+    st.caption(("Vento: " + (f"{rt.texto_componente(vento_kt)} no cruzeiro e metade disso na subida/descida. "
+                             if vento_kt is not None else "sem vento (calcule o vento na rota para incluí-lo). "))
+               + f"Fonte dos desempenhos: {pv.FONTE}. Peso, temperatura, SID/STAR e ATC mudam tudo isso: "
+               "é um exercício de planejamento, não o perfil do FMS. " + extra)
+    return p
+
+
 def aba_vento(plano, fl, voo):
     if not plano:
         st.info("Preencha os Dados do voo (lá em cima) e clique em Planejar voo para ver o vento na rota.",
@@ -421,6 +473,7 @@ def aba_vento(plano, fl, voo):
         return
     # O GFS pesa alguns MB por validade: só baixa quando o usuário pedir (depois fica no cache)
     if not st.session_state.get("vento_ligado"):
+        bloco_perfil(plano, fl, voo)
         st.caption(f"Vento e temperatura do modelo GFS no {fl_txt(fl)} e nos níveis vizinhos (±2.000 ft), "
                    f"ponto a ponto, na hora em que você passa por cada ponto ({txt_horarios(voo)}).")
         if st.button("🌬️ Calcular vento na rota", type="primary"):
@@ -435,6 +488,7 @@ def aba_vento(plano, fl, voo):
         return
     ventos = calcular_ventos(dados_val, fl, plano, voo)
     linhas, res = ventos[fl]
+    perfil = bloco_perfil(plano, fl, voo, res["componente_media"])
     validades = ", ".join(f"{v:%d/%m %H}Z" for v in res["validades"])
     st.markdown(f"**{txt_horarios(voo)}** · {res['distancia_nm']} NM · GFS válido {validades} "
                 f"(Doc 8896: cada validade vale ±1,5 h)")
@@ -447,7 +501,12 @@ def aba_vento(plano, fl, voo):
     cor = "#d7263d" if c <= -15 else "#2e9e44" if c >= 15 else "#c9d3dc"
     st.markdown(f"<div style='font-size:1.05rem'>{fl_txt(escolha)} · componente média: "
                 f"<b style='color:{cor}'>{rt.texto_componente(c)}</b></div>", unsafe_allow_html=True)
-    st.dataframe(_tabela_vento(linhas), hide_index=True, use_container_width=True)
+    # a coluna Fase só faz sentido no nível do perfil (o escolhido)
+    st.dataframe(_tabela_vento(linhas, perfil if escolha == fl else None), hide_index=True,
+                 use_container_width=True)
+    if escolha == fl:
+        st.caption("Fase: onde o avião estaria pelo perfil simulado. Nos pontos em subida/descida o vento "
+                   f"da tabela é o do {fl_txt(fl)}, não o da altitude real do avião naquele ponto.")
     try:
         st.image(_mapa_vento(dados_val, escolha, plano, linhas), use_container_width=True,
                  caption="Os números no mapa são os pontos da tabela.")
@@ -468,13 +527,14 @@ def _cartao(papel, icao, metars, tafs, avisos_ad, agora):
 
 
 def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad, sigmets_txt,
-                    pontos_raios, satelite=None, gfs_val=None, sigwx=None, agora=None):
+                    pontos_raios, satelite=None, gfs_val=None, sigwx=None, agora=None, aeronave=None):
     """Junta tudo num dicionário para o relatorio_pdf.gerar(). Não usa nada do Streamlit
     (assim dá para testar fora do site).
     opcoes  : conjunto com "mapa", "aerodromos", "em_rota", "sigmet", "raios", "vento", "sigwx"
     satelite: (data_url, limites, instante) ou None
     gfs_val : {validade: dados do GFS} ou None
-    sigwx   : lista de cartas de sigwx_do_voo() ou None"""
+    sigwx   : lista de cartas de sigwx_do_voo() ou None
+    aeronave: código de pv.AERONAVES para o perfil TOC/TOD (None = A320)"""
     from . import mapa_estatico as me
     agora = agora or datetime.now(timezone.utc)
     origem, destino, altn = plano
@@ -548,12 +608,29 @@ def montar_briefing(plano, fl, voo, opcoes, corredor_nm, metars, tafs, avisos_ad
                 "fonte": (f"Modelo GFS válido {validades}. Doc 8896 (OACI) 5.3.3.4: cada validade de vento/"
                           "temperatura vale de 1,5 h antes a 1,5 h depois; cada ponto usa a validade da hora "
                           "estimada de passagem. Níveis vizinhos = mesmo sentido de voo (±2.000 ft)."),
-                "resumo_txt": resumo_vento_txt(res), "mapa_png": png_v}
+                "resumo_txt": resumo_vento_txt(res), "mapa_png": png_v,
+                "componente_media": res["componente_media"]}
             b["resumo"].insert(1, (f"Vento no {fl_txt(fl)}",
                                    f"{rt.texto_componente(res['componente_media'])} em média, "
                                    f"máx. {res['vento_max']} kt"))
         else:
             b["indisponiveis"].append("modelo GFS indisponível: o PDF saiu sem a parte de vento.")
+
+    # ---------- perfil vertical (TOC/TOD) ----------
+    if "perfil" in opcoes:
+        vento_kt = b["vento"]["componente_media"] if b.get("vento") else None
+        p = perfil_do_voo(plano, fl, aeronave, vento_kt or 0)
+        b["perfil"] = {"txt": pv.resumo_txt(p, etd), "png": pv.grafico_png(p), "avisos": p["avisos"],
+                       "nota": (f"Regra prática 3:1: TOD a {p['regra_3x1_nm']:.0f} NM do destino. "
+                                + (f"EET estimado pelo perfil: {int(p['eet_perfil_min']) // 60:02d}:"
+                                   f"{int(p['eet_perfil_min']) % 60:02d}. " if p["eet_perfil_min"] else "")
+                                + ("Vento: " + rt.texto_componente(vento_kt) + " no cruzeiro e metade na "
+                                   "subida/descida. " if vento_kt is not None else "Calculado sem vento. ")
+                                + f"Desempenhos: {pv.FONTE}. " + _avisos_elevacao(plano))}
+        b["resumo"].insert(2, ("Perfil (simulado)", pv.resumo_txt(p)))
+        if b.get("vento"):
+            for l in b["vento"]["linhas"]:
+                l["fase"] = pv.texto_fase(p, l["dist_nm"])
 
     # ---------- mapa ----------
     if "mapa" in opcoes:
@@ -600,6 +677,7 @@ ITENS_PDF = {   # chave: (texto da caixa de seleção, marcada por padrão?)
     "sigmet": ("⚡ SIGMET que afetam a rota (decodificados)", True),
     "raios": ("🌩️ Raios perto da rota", True),
     "vento": ("🌬️ Vento e temperatura no nível e vizinhos (GFS)", True),
+    "perfil": ("📈 Perfil vertical simulado (TOC/TOD)", True),
     "sigwx": ("🗺️ Cartas SIGWX das validades do voo", True),
 }
 
@@ -662,7 +740,7 @@ def aba_gerar_voo(plano, fl, voo, api_key, fontes):
                 sigwx = sigwx_do_voo(voo, api_key)
             st.write("Desenhando o mapa e o PDF")
             b = montar_briefing(plano, fl, voo, marcados, corredor, metars, tafs, avisos_ad, textos, pontos,
-                                satelite, gfs_val, sigwx)
+                                satelite, gfs_val, sigwx, aeronave=aeronave_escolhida())
             pdf = relatorio_pdf.gerar(b)
             st.session_state["pdf_voo"] = {
                 "bytes": pdf, "mapa": b.get("mapa_png"), "avisos": b["indisponiveis"],

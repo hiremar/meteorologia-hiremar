@@ -246,7 +246,8 @@ def gerar(b):
         cab = ["Nº", "Hora", "Posição"] + [n + (" *" if n == v["nivel"] else "") for n in niveis] + ["GFS"]
         linhas, cores = [], []
         for i, l in enumerate(v["linhas"]):
-            celulas = [str(l["n"]), f"{l['hora']:%H:%M}Z", f"{l['dist_nm']} NM\n" + _posicao(l)]
+            celulas = [str(l["n"]), f"{l['hora']:%H:%M}Z", f"{l['dist_nm']} NM\n" + _posicao(l)
+                       + (f"\n{l['fase']}" if l.get("fase") else "")]
             for j, n in enumerate(niveis):
                 x = l["por_nivel"][n]
                 celulas.append(f"{x['vento']}\n{x['temp_c']} °C ISA{x['isa_desvio']:+d}\n"
@@ -269,6 +270,16 @@ def gerar(b):
             hist.append(Paragraph("Os números no mapa são os pontos da tabela. Barbelas: traço longo = 10 kt, "
                                   "traço curto = 5 kt, bandeira = 50 kt; a haste aponta para DE ONDE o vento sopra.",
                                   E["peq"]))
+
+    # ---------------- perfil vertical (TOC/TOD) ----------------
+    if b.get("perfil"):
+        p = b["perfil"]
+        bloco = [Spacer(1, 4 * mm), *_secao("Perfil vertical SIMULADO: TOC e TOD"),
+                 Paragraph(_t(p["txt"]), E["corpo"])]
+        bloco += [Paragraph("Atenção: " + _t(a), E["aviso"]) for a in p["avisos"]]
+        bloco += [Spacer(1, 2 * mm), _imagem(p["png"], altura_max=70 * mm),
+                  Paragraph(_t(p["nota"] + " Exercício de planejamento: não é o perfil do FMS."), E["peq"])]
+        hist.append(KeepTogether(bloco))          # título e gráfico sempre na mesma página
 
     # ---------------- SIGWX ----------------
     for carta in b.get("sigwx") or []:
