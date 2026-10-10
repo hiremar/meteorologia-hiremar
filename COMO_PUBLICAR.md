@@ -30,3 +30,11 @@
 Quando estiver tudo certo: no GitHub, **Pull requests → New pull request**,
 base `main` ← compare `melhorias` → **Create** → **Merge**. O site oficial
 se atualiza sozinho. Depois pode apagar o app de teste no share.streamlit.io.
+
+## Depois de aprovar um Pull Request: faça o Reboot
+O Streamlit relê o `app.py` sozinho, mas às vezes continua com a versão ANTIGA dos
+arquivos da pasta `modulos/` na memória. Resultado: parte do site nova, parte velha
+(aconteceu em 10/10/2026: o campo Aeronave apareceu, mas o PDF saiu sem o TOC/TOD).
+Sempre que a mudança mexer em `modulos/`:
+1. No site, clique em **Manage app** (canto inferior direito).
+2. **⋮ → Reboot app** e espere ~1 minuto.

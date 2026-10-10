@@ -27,6 +27,7 @@ from . import aerodromos as ad
 from . import metar as mt
 from . import modelo_gfs as gfs
 from . import perfil_voo as pv
+from . import tracklog as tl
 from . import redemet as rd
 from . import rota as rt
 
@@ -510,13 +511,76 @@ def bloco_perfil(plano, fl, voo, vento_kt=None):
                   "3 NM por 1.000 ft a perder", delta_color="off")
         c4.metric("EET pelo perfil", f"{int(p['eet_perfil_min']) // 60:02d}:{int(p['eet_perfil_min']) % 60:02d}",
                   f"você informou {eet // 60:02d}:{eet % 60:02d}", delta_color="off")
-    st.image(pv.grafico_png(p), use_container_width=True)
+    real = st.session_state.get("tracklog_real")
+    st.image(pv.grafico_png(p, real=real), use_container_width=True)
     extra = _avisos_elevacao(plano)
     st.caption(("Vento: " + (f"{rt.texto_componente(vento_kt)} no cruzeiro e metade disso na subida/descida. "
                              if vento_kt is not None else "sem vento (calcule o vento na rota para incluí-lo). "))
                + f"Fonte dos desempenhos: {pv.FONTE}. Peso, temperatura, SID/STAR e ATC mudam tudo isso: "
                "é um exercício de planejamento, não o perfil do FMS. " + extra)
+    comparar_voo_real(p, real)
     return p
+
+
+def _mmss(minutos):
+    return "—" if minutos is None else f"{int(minutos) // 60:02d}:{int(round(minutos)) % 60:02d}"
+
+
+def tabela_comparacao_real(p, r):
+    """Simulado × real, linha a linha (tudo em texto para a tabela ficar alinhada)."""
+    subir = p["fl"] * 100 - p["elev_origem"]
+    roc_sim = subir / p["toc_min"] if p["toc_min"] else None
+    rod_sim = (p["fl"] * 100 - p["elev_destino"]) / p["tod_min"] if p["tod_min"] else None
+    nm1000_sim = p["tod_nm"] / max((p["fl"] * 100 - p["elev_destino"]) / 1000, 0.1)
+    def n(v, fmt="{:.0f}"):
+        return "—" if v is None else fmt.format(v)
+    linhas = [
+        ("Nível de cruzeiro", f"FL{p['fl']:03d}", f"FL{r['nivel_fl']:03d}"),
+        ("TOC: distância da decolagem", n(p["toc_nm"], "{:.0f} NM"), n(r["toc_nm"], "{:.0f} NM")),
+        ("TOC: tempo de subida", n(p["toc_min"], "{:.0f} min"), n(r["toc_min"], "{:.0f} min")),
+        ("Razão média de subida", n(roc_sim, "{:.0f} ft/min"), n(r["roc_medio"], "{:.0f} ft/min")),
+        ("TOD: distância antes do destino", n(p["tod_nm"], "{:.0f} NM"), n(r["tod_nm"], "{:.0f} NM")),
+        ("Descida: duração", n(p["tod_min"], "{:.0f} min"), n(r["tod_min"], "{:.0f} min")),
+        ("Razão média de descida", n(rod_sim, "{:.0f} ft/min"), n(r["rod_medio"], "{:.0f} ft/min")),
+        ("NM por 1.000 ft na descida (regra: 3)", f"{nm1000_sim:.1f}", f"{r['nm_por_1000ft']:.1f}"),
+        ("Distância percorrida", f"{p['dist_total_nm']:.0f} NM", f"{r['total_nm']:.0f} NM"),
+        ("Tempo em voo (decolagem ao pouso)", _mmss(p["eet_perfil_min"]), _mmss(r["total_min"])),
+    ]
+    return [{"Item": a, "Simulado": b, "Voo real": c} for a, b, c in linhas]
+
+
+def comparar_voo_real(p, real):
+    """Caixa para colar o track log do FlightAware e comparar com o perfil simulado."""
+    with st.expander("🛰️ Comparar com um voo real (track log do FlightAware)", expanded=bool(real)):
+        st.caption("No FlightAware, abra o voo, clique em **Exibir o track log**, selecione a tabela inteira "
+                   "(do cabeçalho até a chegada), copie e cole abaixo. Também vale o arquivo CSV ou o KML "
+                   "do botão **Google Earth**. Para uma comparação justa, planeje aqui a mesma origem, destino, "
+                   "rota, nível e tipo de aeronave do voo real.")
+        texto = st.text_area("Cole aqui a tabela do track log", height=110, key="tl_texto",
+                             placeholder="Horário  Latitude  Longitude  Rota  nós  km/h  metros  Taxa ...")
+        arq = st.file_uploader("ou envie o arquivo (CSV ou KML)", type=["csv", "txt", "kml", "kmz"], key="tl_arquivo")
+        c1, c2 = st.columns(2)
+        if c1.button("📊 Comparar", type="primary", use_container_width=True):
+            pontos, erro = tl.ler(texto=texto, arquivo=arq.getvalue() if arq else None,
+                                  nome_arquivo=arq.name if arq else "")
+            if erro:
+                st.warning(erro, icon="⚠️")
+            else:
+                st.session_state["tracklog_real"] = tl.perfil_real(pontos)
+                st.rerun()
+        if real and c2.button("🧹 Limpar comparação", use_container_width=True):
+            st.session_state.pop("tracklog_real", None)
+            st.rerun()
+        if real:
+            if abs(real["nivel_fl"] - p["fl"]) >= 10:
+                st.info(f"O voo real nivelou no FL{real['nivel_fl']:03d} e o seu plano está no {fl_txt(p['fl'])}. "
+                        f"Para comparar no mesmo nível, planeje no FL{real['nivel_fl']:03d}.", icon="ℹ️")
+            if real["total_min"] is None:
+                st.caption("O arquivo não trouxe a hora de cada ponto: comparamos só as distâncias.")
+            st.dataframe(tabela_comparacao_real(p, real), hide_index=True, use_container_width=True)
+            st.caption("Linha verde no gráfico = voo real. TOC/TOD reais = primeiro e último ponto a menos de "
+                       "300 ft do nível máximo. A descida real costuma começar antes (STAR, restrições do ATC, "
+                       "vetores) e a subida de um avião leve costuma ser mais rápida que a média da tabela.")
 
 
 def aba_vento(plano, fl, voo):
