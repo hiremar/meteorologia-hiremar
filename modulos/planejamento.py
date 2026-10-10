@@ -416,7 +416,7 @@ def _mapa_vento(dados_val, fl, plano, linhas):
 
 def aba_vento(plano, fl, voo):
     if not plano:
-        st.info("Planeje um voo na barra lateral (origem, destino, nível e horário) para ver o vento na rota.",
+        st.info("Preencha os Dados do voo (lá em cima) e clique em Planejar voo para ver o vento na rota.",
                 icon="🧭")
         return
     # O GFS pesa alguns MB por validade: só baixa quando o usuário pedir (depois fica no cache)
@@ -607,7 +607,7 @@ ITENS_PDF = {   # chave: (texto da caixa de seleção, marcada por padrão?)
 def aba_gerar_voo(plano, fl, voo, api_key, fontes):
     """fontes = {"goes", "metars_e_tafs", "sigmets", "raios"} (funções com cache do app.py)"""
     if not plano:
-        st.info("Planeje um voo na barra lateral (origem, destino, alternativa, nível e horário) "
+        st.info("Preencha os Dados do voo (lá em cima) e clique em Planejar voo "
                 "para gerar o pacote de briefing em PDF.", icon="🧭")
         return
     st.markdown(f"Pacote de briefing do voo **{plano[0]} → {plano[1]}**"
