@@ -69,8 +69,9 @@ def _hhmm(epoch):
 
 
 def voos_do_dia(origem, destino, dia, cred=(None, None)):
-    """Voos que decolaram de 'origem' no dia (UTC) com destino estimado 'destino'.
-    Devolve lista de dicts {icao24, indicativo, decolagem, pouso, rotulo, meio}.
+    """Voos que decolaram de 'origem' no dia (UTC) com destino estimado 'destino'
+    (destino=None: TODOS os voos que saíram de 'origem', para qualquer lugar).
+    Devolve lista de dicts {icao24, indicativo, destino, decolagem, pouso, rotulo, meio}.
     O destino da OpenSky é ESTIMADO (aeroporto mais perto de onde o sinal sumiu)."""
     inicio = datetime(dia.year, dia.month, dia.day, tzinfo=timezone.utc)
     dados = _pedir("flights/departure", {"airport": origem, "begin": int(inicio.timestamp()),
@@ -80,7 +81,7 @@ def voos_do_dia(origem, destino, dia, cred=(None, None)):
         if destino and f.get("estArrivalAirport") != destino:
             continue
         ind = (f.get("callsign") or "").strip() or f["icao24"]
-        voos.append({"icao24": f["icao24"], "indicativo": ind,
+        voos.append({"icao24": f["icao24"], "indicativo": ind, "destino": f.get("estArrivalAirport"),
                      "decolagem": f.get("firstSeen"), "pouso": f.get("lastSeen"),
                      # 'meio' = um instante no meio do voo: a trajetória é pedida por instante
                      "meio": (f["firstSeen"] + f["lastSeen"]) // 2 if f.get("lastSeen") else f.get("firstSeen"),
