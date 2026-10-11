@@ -27,6 +27,7 @@ from . import aerodromos as ad
 from . import metar as mt
 from . import modelo_gfs as gfs
 from . import perfil_voo as pv
+from . import opensky as osk
 from . import tracklog as tl
 from . import redemet as rd
 from . import rota as rt
@@ -518,7 +519,7 @@ def bloco_perfil(plano, fl, voo, vento_kt=None):
                              if vento_kt is not None else "sem vento (calcule o vento na rota para incluí-lo). "))
                + f"Fonte dos desempenhos: {pv.FONTE}. Peso, temperatura, SID/STAR e ATC mudam tudo isso: "
                "é um exercício de planejamento, não o perfil do FMS. " + extra)
-    comparar_voo_real(p, real)
+    comparar_voo_real(p, real, plano)
     return p
 
 
@@ -549,26 +550,118 @@ def tabela_comparacao_real(p, r):
     return [{"Item": a, "Simulado": b, "Voo real": c} for a, b, c in linhas]
 
 
-def comparar_voo_real(p, real):
-    """Caixa para colar o track log do FlightAware e comparar com o perfil simulado."""
-    with st.expander("🛰️ Comparar com um voo real (track log do FlightAware)", expanded=bool(real)):
-        st.caption("No FlightAware, abra o voo, clique em **Exibir o track log**, selecione a tabela inteira "
-                   "(do cabeçalho até a chegada), copie e cole abaixo. Também vale o arquivo CSV ou o KML "
-                   "do botão **Google Earth**. Para uma comparação justa, planeje aqui a mesma origem, destino, "
-                   "rota, nível e tipo de aeronave do voo real.")
-        texto = st.text_area("Cole aqui a tabela do track log", height=110, key="tl_texto",
-                             placeholder="Horário  Latitude  Longitude  Rota  nós  km/h  metros  Taxa ...")
-        arq = st.file_uploader("ou envie o arquivo (CSV ou KML)", type=["csv", "txt", "kml", "kmz"], key="tl_arquivo")
-        c1, c2 = st.columns(2)
-        if c1.button("📊 Comparar", type="primary", use_container_width=True):
-            pontos, erro = tl.ler(texto=texto, arquivo=arq.getvalue() if arq else None,
-                                  nome_arquivo=arq.name if arq else "")
-            if erro:
-                st.warning(erro, icon="⚠️")
-            else:
-                st.session_state["tracklog_real"] = tl.perfil_real(pontos)
-                st.rerun()
-        if real and c2.button("🧹 Limpar comparação", use_container_width=True):
+def _cred_opensky():
+    """(client_id, client_secret) dos Secrets do Streamlit, ou (None, None) se não houver."""
+    try:
+        return st.secrets.get("OPENSKY_CLIENT_ID"), st.secrets.get("OPENSKY_CLIENT_SECRET")
+    except Exception:
+        return None, None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)          # voos de dias passados não mudam
+def _voos_do_dia(origem, destino, dia, cred):
+    return osk.voos_do_dia(origem, destino, dia, cred)
+
+
+@st.cache_data(ttl=30, show_spinner=False)            # ao vivo: 30 s
+def _no_ar(limites, cred):
+    return osk.no_ar_perto(limites, cred)
+
+
+def _guardar_real(pontos, origem_txt, ao_vivo=False, margem_ft=300):
+    real = tl.perfil_real(pontos, margem_ft)
+    real.update(fonte=origem_txt, ao_vivo=ao_vivo)
+    st.session_state["tracklog_real"] = real
+    st.rerun()
+
+
+def _escolher_e_comparar(voos, chave, cred, ao_vivo=False):
+    """Caixa de seleção com os voos + botão que baixa a trajetória e compara."""
+    escolha = st.selectbox("Escolha o voo", voos, format_func=lambda v: v["rotulo"], key=f"os_sel_{chave}")
+    if st.button("📊 Comparar este voo", type="primary", key=f"os_cmp_{chave}"):
+        try:
+            with st.spinner("Baixando a trajetória na OpenSky..."):
+                pontos = osk.trajetoria(escolha["icao24"], escolha["meio"], cred)
+            # a OpenSky arredonda a altitude da trajetória em degraus de 1.000 ft
+            _guardar_real(pontos, f"{escolha['indicativo']} (OpenSky" + (", ao vivo)" if ao_vivo else ")"),
+                          ao_vivo, margem_ft=1000)
+        except osk.ErroOpenSky as e:
+            st.warning(str(e), icon="⚠️")
+        except Exception as e:
+            st.warning(f"OpenSky indisponível agora ({type(e).__name__}). Use a aba Colar track log.", icon="⚠️")
+
+
+def comparar_voo_real(p, real, plano):
+    """Caixa para comparar o perfil simulado com um voo REAL: buscando na OpenSky
+    (voos de ontem para trás, ou no ar agora) ou colando o track log do FlightAware."""
+    titulo = "🛰️ Comparar com um voo real" + (f" · {real['fonte']}" if real and real.get("fonte") else "")
+    with st.expander(titulo, expanded=bool(real)):
+        st.caption("Para uma comparação justa, planeje aqui a mesma origem, destino, rota, nível e tipo de "
+                   "aeronave do voo real.")
+        cred = _cred_opensky()
+        aba_busca, aba_vivo, aba_colar = st.tabs(["🔎 Buscar voo (OpenSky)", "📡 No ar agora", "📋 Colar track log"])
+
+        with aba_busca:
+            if not all(cred):
+                st.info("Para buscar voos passados, cadastre OPENSKY_CLIENT_ID e OPENSKY_CLIENT_SECRET nos "
+                        "Secrets do Streamlit (conta gratuita em opensky-network.org).", icon="🔑")
+            ontem = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+            dia = st.date_input("Dia do voo (UTC)", ontem, min_value=ontem - timedelta(days=29), max_value=ontem,
+                                format="DD/MM/YYYY", key="os_dia",
+                                help="A OpenSky fecha a lista de voos à noite: só há voos de ontem para trás, "
+                                     "e trajetórias só dos últimos 30 dias.")
+            st.caption(f"Voos de **{plano[0]} → {plano[1]}** nesse dia (destino estimado pela OpenSky).")
+            if st.button("🔎 Listar voos", key="os_listar"):
+                try:
+                    with st.spinner("Consultando a OpenSky..."):
+                        st.session_state["os_voos"] = _voos_do_dia(plano[0], plano[1], dia, cred)
+                except osk.ErroOpenSky as e:
+                    st.session_state.pop("os_voos", None)
+                    st.warning(str(e), icon="⚠️")
+                except Exception as e:
+                    st.warning(f"OpenSky indisponível agora ({type(e).__name__}).", icon="⚠️")
+            voos = st.session_state.get("os_voos")
+            if voos == []:
+                st.caption("Nenhum voo encontrado entre esses aeródromos nesse dia.")
+            elif voos:
+                _escolher_e_comparar(voos, "dia", cred)
+
+        with aba_vivo:
+            st.caption("Aviões no ar agora perto da sua rota (funciona até sem conta). "
+                       "Se o voo ainda não pousou, o TOD real ainda não aconteceu.")
+            if st.button("📡 Ver quem está no ar", key="os_vivo"):
+                pts = _pernas(plano)
+                lats, lons = [a for a, _ in pts], [b for _, b in pts]
+                limites = (round(min(lats) - 1, 1), round(min(lons) - 1, 1),
+                           round(max(lats) + 1, 1), round(max(lons) + 1, 1))
+                try:
+                    st.session_state["os_no_ar"] = _no_ar(limites, cred)
+                except Exception as e:
+                    st.warning(str(e) if isinstance(e, osk.ErroOpenSky)
+                               else f"OpenSky indisponível agora ({type(e).__name__}).", icon="⚠️")
+            no_ar = st.session_state.get("os_no_ar")
+            if no_ar == []:
+                st.caption("Nenhum avião no ar nessa região agora.")
+            elif no_ar:
+                _escolher_e_comparar(no_ar, "vivo", cred, ao_vivo=True)
+
+        with aba_colar:
+            st.caption("No FlightAware, abra o voo, clique em **Exibir o track log**, selecione a tabela inteira "
+                       "(do cabeçalho até a chegada), copie e cole abaixo. Também vale o CSV ou o KML do botão "
+                       "**Google Earth**.")
+            texto = st.text_area("Cole aqui a tabela do track log", height=110, key="tl_texto",
+                                 placeholder="Horário  Latitude  Longitude  Rota  nós  km/h  metros  Taxa ...")
+            arq = st.file_uploader("ou envie o arquivo (CSV ou KML)", type=["csv", "txt", "kml", "kmz"],
+                                   key="tl_arquivo")
+            if st.button("📊 Comparar", type="primary", key="tl_comparar"):
+                pontos, erro = tl.ler(texto=texto, arquivo=arq.getvalue() if arq else None,
+                                      nome_arquivo=arq.name if arq else "")
+                if erro:
+                    st.warning(erro, icon="⚠️")
+                else:
+                    _guardar_real(pontos, "track log colado")
+
+        if real and st.button("🧹 Limpar comparação", key="tl_limpar"):
             st.session_state.pop("tracklog_real", None)
             st.rerun()
         if real:
