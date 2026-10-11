@@ -59,9 +59,9 @@ def coletar_dia(dia, cred):
         try:
             voos = osk.voos_do_dia(origem, None, dia, cred)
         except osk.ErroOpenSky as e:
-            print(f"[{origem}] {e}")
-            if "esgotados" in str(e):
-                break                                   # sem créditos: para por hoje
+            print(f"::warning::[{origem}] {e}")
+            if "esgotados" in str(e) or "credenciais" in str(e):
+                break                                   # sem créditos ou senha errada: para por hoje
             continue
         except Exception as e:
             print(f"[{origem}] falhou ({type(e).__name__})")
@@ -101,7 +101,10 @@ def main():
            else (datetime.now(timezone.utc) - timedelta(days=1)).date())
     cred = (os.environ.get("OPENSKY_CLIENT_ID"), os.environ.get("OPENSKY_CLIENT_SECRET"))
     if not all(cred):
-        sys.exit("Faltam OPENSKY_CLIENT_ID / OPENSKY_CLIENT_SECRET nos Secrets do GitHub.")
+        # "::error::" faz a mensagem aparecer em vermelho no resumo do GitHub Actions
+        print("::error::Faltam OPENSKY_CLIENT_ID e/ou OPENSKY_CLIENT_SECRET em Settings > Secrets and "
+              "variables > Actions.")
+        sys.exit(1)
 
     (pasta / "voos").mkdir(parents=True, exist_ok=True)
     voos = coletar_dia(dia, cred)
@@ -122,9 +125,13 @@ def main():
         conteudo = json.loads(arq.read_text(encoding="utf-8"))
         indice["dias"][arq.stem] = {par: len(lista) for par, lista in conteudo.items()}
     (pasta / "index.json").write_text(json.dumps(indice, separators=(",", ":")), encoding="utf-8")
-    print(f"Índice: {len(indice['dias'])} dia(s)")
+    total = sum(len(v) for v in voos.values())
     if not voos:
-        sys.exit(1)        # nada coletado: o workflow mostra falha (mas o acervo antigo fica)
+        print(f"::error::Nenhum voo coletado para {dia} (OpenSky fora do ar, sem créditos ou sem "
+              "trajetórias). O acervo antigo foi mantido.")
+        sys.exit(1)
+    # "::notice::" aparece no resumo do GitHub Actions: dá para ver o resultado sem abrir o registro
+    print(f"::notice::{dia}: {total} voos em {len(voos)} pares. Acervo com {len(indice['dias'])} dia(s).")
 
 
 if __name__ == "__main__":
