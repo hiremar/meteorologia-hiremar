@@ -150,12 +150,19 @@ def ler(texto=None, arquivo=None, nome_arquivo=""):
 # ---------------------------------------------------------------------------
 def perfil_real(pontos, margem_ft=300):
     """Distância percorrida (NM) × altitude, e o TOC/TOD REAIS.
-    TOC real = primeiro ponto a menos de 300 ft do nível máximo; TOD real = último ponto assim."""
+    Nível de cruzeiro = a MAIOR altitude que aparece pelo menos 2 vezes (arredondada a 500 ft).
+    Assim um pico isolado não conta, e na OpenSky (que alterna FL350/FL360 por arredondamento)
+    o nível fica o certo, FL360.
+    TOC real = primeiro ponto a menos de 'margem_ft' desse nível; TOD real = último ponto assim.
+    FlightAware: 300 ft. OpenSky (altitude em degraus de 1.000 ft): use 1.000 ft."""
+    from collections import Counter
     dist = [0.0]
     for a, b in zip(pontos, pontos[1:]):
         dist.append(dist[-1] + _distancia_nm(a["lat"], a["lon"], b["lat"], b["lon"]))
     alts = [p["alt_ft"] for p in pontos]
-    topo = max(alts)
+    contagem = Counter(round(h / 500) * 500 for h in alts)
+    repetidas = [h for h, n in contagem.items() if n >= 2]
+    topo = max(repetidas) if repetidas else max(alts)
     no_topo = [i for i, h in enumerate(alts) if h >= topo - margem_ft]
     i_toc, i_tod = no_topo[0], no_topo[-1]
     tem_hora = all(p["min"] is not None for p in pontos)
