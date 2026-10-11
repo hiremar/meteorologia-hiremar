@@ -1,0 +1,14 @@
+name: Teste OpenSky (descartável)
+on:
+  push:
+    branches: [teste-opensky]
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Conectar na OpenSky
+        run: |
+          curl -sS -m 30 -o /tmp/r.json -w "states HTTP %{http_code} em %{time_total}s\n" "https://opensky-network.org/api/states/all?lamin=-24.5&lomin=-47.5&lamax=-22&lomax=-42.5" || echo "states FALHOU"
+          head -c 200 /tmp/r.json; echo
+          curl -sS -m 30 -o /dev/null -w "token HTTP %{http_code} em %{time_total}s\n" -X POST -d "grant_type=client_credentials&client_id=x&client_secret=y" "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token" || echo "token FALHOU"
