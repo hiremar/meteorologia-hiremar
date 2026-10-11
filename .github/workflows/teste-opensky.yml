@@ -9,6 +9,8 @@ jobs:
     steps:
       - name: Conectar na OpenSky
         run: |
-          curl -sS -m 30 -o /tmp/r.json -w "states HTTP %{http_code} em %{time_total}s\n" "https://opensky-network.org/api/states/all?lamin=-24.5&lomin=-47.5&lamax=-22&lomax=-42.5" || echo "states FALHOU"
-          head -c 200 /tmp/r.json; echo
-          curl -sS -m 30 -o /dev/null -w "token HTTP %{http_code} em %{time_total}s\n" -X POST -d "grant_type=client_credentials&client_id=x&client_secret=y" "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token" || echo "token FALHOU"
+          A=$(curl -sS -m 30 -o /tmp/r.json -w "HTTP %{http_code} em %{time_total}s" "https://opensky-network.org/api/states/all?lamin=-24.5&lomin=-47.5&lamax=-22&lomax=-42.5" 2>&1 || true)
+          N=$(python3 -c "import json;print(len(json.load(open('/tmp/r.json')).get('states') or []))" 2>/dev/null || echo "?")
+          echo "::notice title=states::$A, avioes=$N"
+          B=$(curl -sS -m 30 -o /dev/null -w "HTTP %{http_code} em %{time_total}s" -X POST -d "grant_type=client_credentials&client_id=x&client_secret=y" "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token" 2>&1 || true)
+          echo "::notice title=token::$B"
