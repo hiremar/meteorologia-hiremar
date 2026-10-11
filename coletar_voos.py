@@ -24,6 +24,8 @@ from modulos import opensky as osk
 
 AEROPORTOS = [
     "SBGR", "SBSP", "SBKP",            # São Paulo
+    # aviação geral / voos curtos na TMA São Paulo (Cessna 172, instrução...)
+    "SBMT", "SBJD", "SBBP", "SBJH", "SDCO", "SBSJ",
     "SBRJ", "SBGL",                    # Rio de Janeiro
     "SBPA", "SBCT", "SBFL",            # Sul
     "SBBR", "SBGO", "SBCG", "SBCY",    # Centro-Oeste
