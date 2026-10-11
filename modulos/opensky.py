@@ -41,8 +41,8 @@ def _cabecalho(client_id, client_secret):
     r = requests.post(URL_TOKEN, data={"grant_type": "client_credentials", "client_id": client_id,
                                        "client_secret": client_secret}, timeout=TIMEOUT)
     if r.status_code != 200:
-        raise ErroOpenSky("A OpenSky recusou as credenciais (confira OPENSKY_CLIENT_ID e "
-                          "OPENSKY_CLIENT_SECRET nos Secrets do Streamlit).")
+        raise ErroOpenSky("A OpenSky recusou as credenciais: confira OPENSKY_CLIENT_ID (o nome, ex.: "
+                          "hiremar-api-client) e OPENSKY_CLIENT_SECRET (a senha do credentials.json).")
     js = r.json()
     _token.update(valor=js["access_token"], expira=time.time() + js.get("expires_in", 1800))
     return {"Authorization": f"Bearer {_token['valor']}"}
