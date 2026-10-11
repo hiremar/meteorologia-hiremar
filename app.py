@@ -160,15 +160,19 @@ def aerovias_do_nivel(nivel):
     if not recente:
         try:
             return segmentos_aerovias(nivel), None
-        except Exception as e:
+        except Exception:
             falhas[nivel] = time.time()
-            motivo = type(e).__name__
-    else:
-        motivo = "fora do ar há pouco"
     copia, quando = av.ler_copia(nivel)
     if copia:
-        return copia, f"GEOAISWEB indisponível ({motivo}): aerovias de {nivel} da cópia de {quando}"
-    return [], f"aerovias de {nivel} indisponíveis no GEOAISWEB agora ({motivo})"
+        dia = f"{quando[8:10]}/{quando[5:7]}" if quando else "?"
+        return copia, (f"GEOAISWEB (DECEA) momentaneamente fora do ar: aerovias de {nivel} da cópia "
+                       f"guardada em {dia}")
+    return [], f"GEOAISWEB (DECEA) momentaneamente fora do ar: aerovias de {nivel} indisponíveis"
+
+
+def geoaisweb_fora():
+    """True se o GEOAISWEB falhou nos últimos 10 minutos (para avisar sobre as cartas ENRC/WAC)."""
+    return any(time.time() - t < 600 for t in _falhas_geoaisweb().values())
 
 
 def rede_aerovias():
@@ -409,8 +413,8 @@ if aba.startswith(("🛰️", "🧭")):
                     with st.spinner("Lendo as aerovias do GEOAISWEB..."):
                         fixos, vias, erros_av = rede_aerovias()
                     if not vias:
-                        st.session_state["rota_erro"] = ("Não consegui baixar as aerovias agora ("
-                                                         + "; ".join(erros_av) + "). Desenhei em linha reta.")
+                        st.session_state["rota_erro"] = ("GEOAISWEB (DECEA) momentaneamente fora do ar e "
+                                                         "sem cópia das aerovias: desenhei em linha reta.")
                     else:
                         r = av.ler_rota(rota_txt, fixos, vias, origem, destino)
                         if r["ok"]:
@@ -478,6 +482,9 @@ if aba.startswith(("🛰️", "🧭")):
         letra = "L" if "baixa" in enrc else "H"
         camadas += [(f"ICA:ENRC_{letra}{i}", f"ENRC {letra}{i}") for i in range(1, 10)]
     camadas += [(f"ICA:{w}", nome_wac(w)) for w in wacs]
+    if camadas and geoaisweb_fora():
+        avisos.append("GEOAISWEB (DECEA) momentaneamente fora do ar: as cartas ENRC/WAC podem não aparecer "
+                      "no mapa. O resto do briefing segue normal.")
     for camada, nome in camadas:
         folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=camada,
                             fmt="image/png", transparent=True, name=nome, overlay=True).add_to(m)
