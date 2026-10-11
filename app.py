@@ -5,6 +5,7 @@ cada assunto num arquivo (satélite, REDEMET, modelo GFS, desenho do mapa...).
 """
 import html
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -142,17 +143,45 @@ def segmentos_aerovias(nivel):
     return av.baixar(nivel)
 
 
-def rede_aerovias():
-    """Junta alta + baixa numa rede só: (fixos, aerovias, erros)."""
+@st.cache_resource
+def _falhas_geoaisweb():
+    """Memória do servidor (vale para todos os visitantes): quando o GEOAISWEB falhou por último."""
+    return {}
+
+
+def aerovias_do_nivel(nivel):
+    """Segmentos de 'alta' ou 'baixa' e um aviso (ou None).
+    1º tenta o GEOAISWEB (com cache de 1 dia). Se ele falhar, usa a CÓPIA guardada no repositório
+    (pasta dados/, atualizada toda semana pelo robô do GitHub) e não insiste por 10 minutos,
+    para ninguém ficar esperando um servidor que está fora do ar."""
     from modulos import aerovias as av
-    segs, erros = [], []
-    for nivel in ("alta", "baixa"):
+    falhas = _falhas_geoaisweb()
+    recente = time.time() - falhas.get(nivel, 0) < 600          # falhou há menos de 10 min?
+    if not recente:
         try:
-            segs += segmentos_aerovias(nivel)
+            return segmentos_aerovias(nivel), None
         except Exception as e:
-            erros.append(f"aerovias de {nivel} indisponíveis no GEOAISWEB agora ({type(e).__name__})")
+            falhas[nivel] = time.time()
+            motivo = type(e).__name__
+    else:
+        motivo = "fora do ar há pouco"
+    copia, quando = av.ler_copia(nivel)
+    if copia:
+        return copia, f"GEOAISWEB indisponível ({motivo}): aerovias de {nivel} da cópia de {quando}"
+    return [], f"aerovias de {nivel} indisponíveis no GEOAISWEB agora ({motivo})"
+
+
+def rede_aerovias():
+    """Junta alta + baixa numa rede só: (fixos, aerovias, avisos)."""
+    from modulos import aerovias as av
+    segs, avisos = [], []
+    for nivel in ("alta", "baixa"):
+        s, aviso = aerovias_do_nivel(nivel)
+        segs += s
+        if aviso:
+            avisos.append(aviso)
     fixos, aerovias = av.montar_rede(segs)
-    return fixos, aerovias, erros
+    return fixos, aerovias, avisos
 
 
 # Cartas do GeoAISWEB: { nome da camada no servidor: texto no menu }.
@@ -565,7 +594,10 @@ if aba.startswith(("🛰️", "🧭")):
             try:
                 caixa = rt_mod.limites(pts, margem_graus=1.0, minimo_graus=3)
                 grupo = folium.FeatureGroup(name=f"Aerovias de {nivel_av} (DECEA)")
-                for s in av.segmentos_na_caixa(segmentos_aerovias(nivel_av), caixa):
+                segs_av, aviso_av = aerovias_do_nivel(nivel_av)
+                if aviso_av:
+                    avisos.append(aviso_av + ".")
+                for s in av.segmentos_na_caixa(segs_av, caixa):
                     folium.PolyLine(s["pts"], color="#5b7cfa", weight=2, opacity=0.75,
                                     tooltip=f"{s['aerovia']} · {s['de']}→{s['para']} · "
                                             f"{s['base']} a {s['topo']}"

@@ -12,8 +12,11 @@ Fonte: serviço WFS (dados vetoriais, não imagem) do GeoServer do GEOAISWEB, ca
 vw_aerovia_alta_v2 (espaço aéreo superior) e vw_aerovia_baixa_v2 (inferior).
 Dados públicos; mudam a cada emenda AIRAC (por isso o cache de 1 dia no app.py).
 """
+import json
 import re
 from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -28,9 +31,37 @@ CAMPOS = ("text_designator,sequence,from_fix_ident,to_fix_ident,direction,"
 # ---------------------------------------------------------------------------
 # 1) Baixar
 # ---------------------------------------------------------------------------
-def baixar(nivel, timeout=90):
+# Cópia guardada no repositório (pasta dados/), atualizada toda semana pelo robô
+# .github/workflows/aerovias.yml. Usada quando o GEOAISWEB está fora do ar.
+PASTA_COPIA = Path(__file__).resolve().parent.parent / "dados"
+
+
+def arquivo_copia(nivel):
+    return PASTA_COPIA / f"aerovias_{nivel}.json"
+
+
+def salvar_copia(nivel, segs):
+    """Grava os segmentos num JSON (com a data do download) na pasta dados/."""
+    PASTA_COPIA.mkdir(exist_ok=True)
+    conteudo = {"baixado_em": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ"), "segmentos": segs}
+    arquivo_copia(nivel).write_text(json.dumps(conteudo, ensure_ascii=False, separators=(",", ":")),
+                                    encoding="utf-8")
+
+
+def ler_copia(nivel):
+    """(segmentos, 'AAAA-MM-DD HH:MMZ') da cópia guardada, ou (None, None) se não existir."""
+    try:
+        conteudo = json.loads(arquivo_copia(nivel).read_text(encoding="utf-8"))
+        return conteudo["segmentos"], conteudo["baixado_em"]
+    except Exception:
+        return None, None
+
+
+def baixar(nivel, timeout=(10, 45)):
     """Baixa TODOS os segmentos de uma camada ("alta" ou "baixa") e devolve uma lista
-    de dicionários simples (ver _segmento). WFS versão 1.0.0 => coordenadas em (lon, lat)."""
+    de dicionários simples (ver _segmento). WFS versão 1.0.0 => coordenadas em (lon, lat).
+    timeout = (10 s para conectar, 45 s de silêncio no meio do download): servidor fora do ar
+    desiste rápido em vez de prender a página por minutos."""
     params = {"service": "WFS", "version": "1.0.0", "request": "GetFeature",
               "typeName": CAMADAS[nivel], "outputFormat": "application/json",
               "propertyName": CAMPOS}
