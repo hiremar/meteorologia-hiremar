@@ -581,11 +581,10 @@ def comparar_voo_real(p, real, plano):
                 ind = _indice_voos()
             except Exception as e:
                 ind = None
-                st.warning(f"Biblioteca de voos indisponível agora ({type(e).__name__}). "
-                           "Use a aba Colar track log.", icon="⚠️")
+                st.warning("Voos reais momentaneamente indisponíveis. Use a aba Colar track log.", icon="⚠️")
             if ind is None:
-                st.info("A biblioteca de voos reais ainda está vazia: o robô do GitHub coleta os voos "
-                        "toda madrugada.", icon="🛰️")
+                st.info("Ainda não há voos reais disponíveis para comparação. Volte mais tarde ou use a "
+                        "aba Colar track log.", icon="🛰️")
             else:
                 dias = bv.dias_com_par(ind, plano[0], plano[1])
                 aeroportos = ind.get("aeroportos", [])
@@ -593,7 +592,7 @@ def comparar_voo_real(p, real, plano):
                     st.caption(f"A biblioteca guarda voos entre: {', '.join(aeroportos)}. "
                                f"{plano[0]} → {plano[1]} ainda não está na lista.")
                 elif not dias:
-                    st.caption(f"Nenhum voo {plano[0]} → {plano[1]} guardado nos últimos dias.")
+                    st.caption(f"Ainda não há voos {plano[0]} → {plano[1]} disponíveis para comparação.")
                 else:
                     dia = st.selectbox("Dia do voo (UTC)", dias, key="bv_dia",
                                        format_func=lambda d: f"{d[8:10]}/{d[5:7]}/{d[:4]}")
@@ -609,8 +608,8 @@ def comparar_voo_real(p, real, plano):
                             # a OpenSky arredonda a altitude da trajetória em degraus de 1.000 ft
                             _guardar_real(bv.pontos_do_voo(escolha), f"{escolha['indicativo']} "
                                           f"({dia[8:10]}/{dia[5:7]}, OpenSky)", margem_ft=1000)
-                st.caption(f"Biblioteca atualizada em {ind.get('atualizado', '?')} · até 4 voos por par e "
-                           "por dia, últimos 30 dias · dados: OpenSky Network. "
+                st.caption(f"Atualizado em {ind.get('atualizado', '?')} · voos dos últimos 30 dias · "
+                           "dados: OpenSky Network. "
                            "Para ver aviões voando agora: [mapa ao vivo da OpenSky](https://map.opensky-network.org).")
 
         with aba_colar:
