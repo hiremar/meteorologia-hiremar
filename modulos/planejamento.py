@@ -27,7 +27,7 @@ from . import aerodromos as ad
 from . import metar as mt
 from . import modelo_gfs as gfs
 from . import perfil_voo as pv
-from . import opensky as osk
+from . import biblioteca_voos as bv
 from . import tracklog as tl
 from . import redemet as rd
 from . import rota as rt
@@ -550,45 +550,21 @@ def tabela_comparacao_real(p, r):
     return [{"Item": a, "Simulado": b, "Voo real": c} for a, b, c in linhas]
 
 
-def _cred_opensky():
-    """(client_id, client_secret) dos Secrets do Streamlit, ou (None, None) se não houver."""
-    try:
-        return st.secrets.get("OPENSKY_CLIENT_ID"), st.secrets.get("OPENSKY_CLIENT_SECRET")
-    except Exception:
-        return None, None
+@st.cache_data(ttl=1800, show_spinner=False)          # o robô atualiza 1 vez por dia
+def _indice_voos():
+    return bv.indice()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)          # voos de dias passados não mudam
-def _voos_do_dia(origem, destino, dia, cred):
-    return osk.voos_do_dia(origem, destino, dia, cred)
+@st.cache_data(ttl=6 * 3600, show_spinner=False, max_entries=40)
+def _voos_do_par(dia, origem, destino):
+    return bv.voos_do_par(dia, origem, destino)
 
 
-@st.cache_data(ttl=30, show_spinner=False)            # ao vivo: 30 s
-def _no_ar(limites, cred):
-    return osk.no_ar_perto(limites, cred)
-
-
-def _guardar_real(pontos, origem_txt, ao_vivo=False, margem_ft=300):
+def _guardar_real(pontos, origem_txt, margem_ft=300):
     real = tl.perfil_real(pontos, margem_ft)
-    real.update(fonte=origem_txt, ao_vivo=ao_vivo)
+    real.update(fonte=origem_txt)
     st.session_state["tracklog_real"] = real
     st.rerun()
-
-
-def _escolher_e_comparar(voos, chave, cred, ao_vivo=False):
-    """Caixa de seleção com os voos + botão que baixa a trajetória e compara."""
-    escolha = st.selectbox("Escolha o voo", voos, format_func=lambda v: v["rotulo"], key=f"os_sel_{chave}")
-    if st.button("📊 Comparar este voo", type="primary", key=f"os_cmp_{chave}"):
-        try:
-            with st.spinner("Baixando a trajetória na OpenSky..."):
-                pontos = osk.trajetoria(escolha["icao24"], escolha["meio"], cred)
-            # a OpenSky arredonda a altitude da trajetória em degraus de 1.000 ft
-            _guardar_real(pontos, f"{escolha['indicativo']} (OpenSky" + (", ao vivo)" if ao_vivo else ")"),
-                          ao_vivo, margem_ft=1000)
-        except osk.ErroOpenSky as e:
-            st.warning(str(e), icon="⚠️")
-        except Exception as e:
-            st.warning(f"OpenSky indisponível agora ({type(e).__name__}). Use a aba Colar track log.", icon="⚠️")
 
 
 def comparar_voo_real(p, real, plano):
@@ -598,52 +574,44 @@ def comparar_voo_real(p, real, plano):
     with st.expander(titulo, expanded=bool(real)):
         st.caption("Para uma comparação justa, planeje aqui a mesma origem, destino, rota, nível e tipo de "
                    "aeronave do voo real.")
-        cred = _cred_opensky()
-        aba_busca, aba_vivo, aba_colar = st.tabs(["🔎 Buscar voo (OpenSky)", "📡 No ar agora", "📋 Colar track log"])
+        aba_busca, aba_colar = st.tabs(["🔎 Buscar voo real", "📋 Colar track log"])
 
         with aba_busca:
-            if not all(cred):
-                st.info("Para buscar voos passados, cadastre OPENSKY_CLIENT_ID e OPENSKY_CLIENT_SECRET nos "
-                        "Secrets do Streamlit (conta gratuita em opensky-network.org).", icon="🔑")
-            ontem = (datetime.now(timezone.utc) - timedelta(days=1)).date()
-            dia = st.date_input("Dia do voo (UTC)", ontem, min_value=ontem - timedelta(days=29), max_value=ontem,
-                                format="DD/MM/YYYY", key="os_dia",
-                                help="A OpenSky fecha a lista de voos à noite: só há voos de ontem para trás, "
-                                     "e trajetórias só dos últimos 30 dias.")
-            st.caption(f"Voos de **{plano[0]} → {plano[1]}** nesse dia (destino estimado pela OpenSky).")
-            if st.button("🔎 Listar voos", key="os_listar"):
-                try:
-                    with st.spinner("Consultando a OpenSky..."):
-                        st.session_state["os_voos"] = _voos_do_dia(plano[0], plano[1], dia, cred)
-                except osk.ErroOpenSky as e:
-                    st.session_state.pop("os_voos", None)
-                    st.warning(str(e), icon="⚠️")
-                except Exception as e:
-                    st.warning(f"OpenSky indisponível agora ({type(e).__name__}).", icon="⚠️")
-            voos = st.session_state.get("os_voos")
-            if voos == []:
-                st.caption("Nenhum voo encontrado entre esses aeródromos nesse dia.")
-            elif voos:
-                _escolher_e_comparar(voos, "dia", cred)
-
-        with aba_vivo:
-            st.caption("Aviões no ar agora perto da sua rota (funciona até sem conta). "
-                       "Se o voo ainda não pousou, o TOD real ainda não aconteceu.")
-            if st.button("📡 Ver quem está no ar", key="os_vivo"):
-                pts = _pernas(plano)
-                lats, lons = [a for a, _ in pts], [b for _, b in pts]
-                limites = (round(min(lats) - 1, 1), round(min(lons) - 1, 1),
-                           round(max(lats) + 1, 1), round(max(lons) + 1, 1))
-                try:
-                    st.session_state["os_no_ar"] = _no_ar(limites, cred)
-                except Exception as e:
-                    st.warning(str(e) if isinstance(e, osk.ErroOpenSky)
-                               else f"OpenSky indisponível agora ({type(e).__name__}).", icon="⚠️")
-            no_ar = st.session_state.get("os_no_ar")
-            if no_ar == []:
-                st.caption("Nenhum avião no ar nessa região agora.")
-            elif no_ar:
-                _escolher_e_comparar(no_ar, "vivo", cred, ao_vivo=True)
+            try:
+                ind = _indice_voos()
+            except Exception as e:
+                ind = None
+                st.warning(f"Biblioteca de voos indisponível agora ({type(e).__name__}). "
+                           "Use a aba Colar track log.", icon="⚠️")
+            if ind is None:
+                st.info("A biblioteca de voos reais ainda está vazia: o robô do GitHub coleta os voos "
+                        "toda madrugada.", icon="🛰️")
+            else:
+                dias = bv.dias_com_par(ind, plano[0], plano[1])
+                aeroportos = ind.get("aeroportos", [])
+                if plano[0] not in aeroportos or plano[1] not in aeroportos:
+                    st.caption(f"A biblioteca guarda voos entre: {', '.join(aeroportos)}. "
+                               f"{plano[0]} → {plano[1]} ainda não está na lista.")
+                elif not dias:
+                    st.caption(f"Nenhum voo {plano[0]} → {plano[1]} guardado nos últimos dias.")
+                else:
+                    dia = st.selectbox("Dia do voo (UTC)", dias, key="bv_dia",
+                                       format_func=lambda d: f"{d[8:10]}/{d[5:7]}/{d[:4]}")
+                    try:
+                        voos = _voos_do_par(dia, plano[0], plano[1])
+                    except Exception as e:
+                        voos = []
+                        st.warning(f"Não consegui abrir os voos desse dia ({type(e).__name__}).", icon="⚠️")
+                    if voos:
+                        escolha = st.selectbox("Escolha o voo", voos, format_func=lambda v: v["rotulo"],
+                                               key="bv_voo")
+                        if st.button("📊 Comparar este voo", type="primary", key="bv_comparar"):
+                            # a OpenSky arredonda a altitude da trajetória em degraus de 1.000 ft
+                            _guardar_real(bv.pontos_do_voo(escolha), f"{escolha['indicativo']} "
+                                          f"({dia[8:10]}/{dia[5:7]}, OpenSky)", margem_ft=1000)
+                st.caption(f"Biblioteca atualizada em {ind.get('atualizado', '?')} · até 4 voos por par e "
+                           "por dia, últimos 30 dias · dados: OpenSky Network. "
+                           "Para ver aviões voando agora: [mapa ao vivo da OpenSky](https://map.opensky-network.org).")
 
         with aba_colar:
             st.caption("No FlightAware, abra o voo, clique em **Exibir o track log**, selecione a tabela inteira "

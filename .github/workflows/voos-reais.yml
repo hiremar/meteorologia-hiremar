@@ -1,0 +1,62 @@
+name: Biblioteca de voos reais (OpenSky)
+
+on:
+  schedule:
+    # Todo dia ~08:41 UTC (05:41 no Brasil): depois do processamento noturno da OpenSky.
+    - cron: '41 8 * * *'
+  workflow_dispatch:
+    inputs:
+      dia:
+        description: 'Dia a coletar (AAAA-MM-DD). Vazio = ontem.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write           # para gravar no ramo dados-voos
+
+concurrency:
+  group: voos-reais
+  cancel-in-progress: false
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar bibliotecas
+        run: pip install requests
+
+      - name: Trazer o acervo atual (ramo dados-voos), se já existir
+        run: |
+          mkdir -p acervo
+          if git fetch --depth 1 origin dados-voos; then
+            git --work-tree=acervo checkout FETCH_HEAD -- .
+            git reset -q           # (só trouxe os arquivos para a pasta 'acervo')
+          fi
+
+      - name: Coletar os voos do dia
+        env:
+          OPENSKY_CLIENT_ID: ${{ secrets.OPENSKY_CLIENT_ID }}
+          OPENSKY_CLIENT_SECRET: ${{ secrets.OPENSKY_CLIENT_SECRET }}
+        run: python coletar_voos.py acervo ${{ github.event.inputs.dia }}
+
+      - name: Gravar o acervo no ramo dados-voos (sempre um único commit, sem histórico)
+        if: always()
+        run: |
+          cd acervo
+          [ -f index.json ] || { echo "Acervo vazio, nada a gravar."; exit 0; }
+          git init -q -b dados-voos
+          git config user.name "robo-voos"
+          git config user.email "robo-voos@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Biblioteca de voos reais (OpenSky) - $(date -u +%F)"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" dados-voos
+          echo "Acervo gravado: $(ls voos | wc -l) dia(s)."
