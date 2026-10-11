@@ -5,6 +5,7 @@ cada assunto num arquivo (satélite, REDEMET, modelo GFS, desenho do mapa...).
 """
 import html
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -142,17 +143,49 @@ def segmentos_aerovias(nivel):
     return av.baixar(nivel)
 
 
-def rede_aerovias():
-    """Junta alta + baixa numa rede só: (fixos, aerovias, erros)."""
+@st.cache_resource
+def _falhas_geoaisweb():
+    """Memória do servidor (vale para todos os visitantes): quando o GEOAISWEB falhou por último."""
+    return {}
+
+
+def aerovias_do_nivel(nivel):
+    """Segmentos de 'alta' ou 'baixa' e um aviso (ou None).
+    1º tenta o GEOAISWEB (com cache de 1 dia). Se ele falhar, usa a CÓPIA guardada no repositório
+    (pasta dados/, atualizada toda semana pelo robô do GitHub) e não insiste por 10 minutos,
+    para ninguém ficar esperando um servidor que está fora do ar."""
     from modulos import aerovias as av
-    segs, erros = [], []
-    for nivel in ("alta", "baixa"):
+    falhas = _falhas_geoaisweb()
+    recente = time.time() - falhas.get(nivel, 0) < 600          # falhou há menos de 10 min?
+    if not recente:
         try:
-            segs += segmentos_aerovias(nivel)
-        except Exception as e:
-            erros.append(f"aerovias de {nivel} indisponíveis no GEOAISWEB agora ({type(e).__name__})")
+            return segmentos_aerovias(nivel), None
+        except Exception:
+            falhas[nivel] = time.time()
+    copia, quando = av.ler_copia(nivel)
+    if copia:
+        dia = f"{quando[8:10]}/{quando[5:7]}" if quando else "?"
+        return copia, (f"GEOAISWEB (DECEA) momentaneamente fora do ar: aerovias de {nivel} da cópia "
+                       f"guardada em {dia}")
+    return [], f"GEOAISWEB (DECEA) momentaneamente fora do ar: aerovias de {nivel} indisponíveis"
+
+
+def geoaisweb_fora():
+    """True se o GEOAISWEB falhou nos últimos 10 minutos (para avisar sobre as cartas ENRC/WAC)."""
+    return any(time.time() - t < 600 for t in _falhas_geoaisweb().values())
+
+
+def rede_aerovias():
+    """Junta alta + baixa numa rede só: (fixos, aerovias, avisos)."""
+    from modulos import aerovias as av
+    segs, avisos = [], []
+    for nivel in ("alta", "baixa"):
+        s, aviso = aerovias_do_nivel(nivel)
+        segs += s
+        if aviso:
+            avisos.append(aviso)
     fixos, aerovias = av.montar_rede(segs)
-    return fixos, aerovias, erros
+    return fixos, aerovias, avisos
 
 
 # Cartas do GeoAISWEB: { nome da camada no servidor: texto no menu }.
@@ -380,8 +413,8 @@ if aba.startswith(("🛰️", "🧭")):
                     with st.spinner("Lendo as aerovias do GEOAISWEB..."):
                         fixos, vias, erros_av = rede_aerovias()
                     if not vias:
-                        st.session_state["rota_erro"] = ("Não consegui baixar as aerovias agora ("
-                                                         + "; ".join(erros_av) + "). Desenhei em linha reta.")
+                        st.session_state["rota_erro"] = ("GEOAISWEB (DECEA) momentaneamente fora do ar e "
+                                                         "sem cópia das aerovias: desenhei em linha reta.")
                     else:
                         r = av.ler_rota(rota_txt, fixos, vias, origem, destino)
                         if r["ok"]:
@@ -449,6 +482,9 @@ if aba.startswith(("🛰️", "🧭")):
         letra = "L" if "baixa" in enrc else "H"
         camadas += [(f"ICA:ENRC_{letra}{i}", f"ENRC {letra}{i}") for i in range(1, 10)]
     camadas += [(f"ICA:{w}", nome_wac(w)) for w in wacs]
+    if camadas and geoaisweb_fora():
+        avisos.append("GEOAISWEB (DECEA) momentaneamente fora do ar: as cartas ENRC/WAC podem não aparecer "
+                      "no mapa. O resto do briefing segue normal.")
     for camada, nome in camadas:
         folium.WmsTileLayer(url="https://geoaisweb.decea.mil.br/geoserver/ICA/wms", layers=camada,
                             fmt="image/png", transparent=True, name=nome, overlay=True).add_to(m)
@@ -565,7 +601,10 @@ if aba.startswith(("🛰️", "🧭")):
             try:
                 caixa = rt_mod.limites(pts, margem_graus=1.0, minimo_graus=3)
                 grupo = folium.FeatureGroup(name=f"Aerovias de {nivel_av} (DECEA)")
-                for s in av.segmentos_na_caixa(segmentos_aerovias(nivel_av), caixa):
+                segs_av, aviso_av = aerovias_do_nivel(nivel_av)
+                if aviso_av:
+                    avisos.append(aviso_av + ".")
+                for s in av.segmentos_na_caixa(segs_av, caixa):
                     folium.PolyLine(s["pts"], color="#5b7cfa", weight=2, opacity=0.75,
                                     tooltip=f"{s['aerovia']} · {s['de']}→{s['para']} · "
                                             f"{s['base']} a {s['topo']}"
